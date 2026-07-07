@@ -31,6 +31,56 @@ class AdminServerHelperTests(unittest.TestCase):
         self.assertEqual(metrics["bgp_antifilter_routes_total"], 123)
         self.assertEqual(metrics['bgp_antifilter_source_status_total{status="fresh"}'], 4)
 
+    def test_short_duration_formats_compact_values(self):
+        self.assertEqual(admin_server.short_duration(0), "0s")
+        self.assertEqual(admin_server.short_duration(59), "59s")
+        self.assertEqual(admin_server.short_duration(61), "1m1s")
+        self.assertEqual(admin_server.short_duration(3660), "1h1m")
+        self.assertEqual(admin_server.short_duration(90000), "1d1h")
+
+    def test_public_status_payload_returns_compact_public_fields(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            status_file = Path(tmp) / "status.json"
+            status_file.write_text(
+                "{"
+                '"updated_at_unix": 1700000000,'
+                '"duration_seconds": 125,'
+                '"routes": {"final": 321}'
+                "}",
+                encoding="utf-8",
+            )
+            old_status_file = admin_server.STATUS_FILE
+            old_started_at = admin_server.SERVER_STARTED_AT_UNIX
+            admin_server.STATUS_FILE = status_file
+            admin_server.SERVER_STARTED_AT_UNIX = 1699996400
+            try:
+                payload = admin_server.public_status_payload(now=1700003600)
+            finally:
+                admin_server.STATUS_FILE = old_status_file
+                admin_server.SERVER_STARTED_AT_UNIX = old_started_at
+
+        self.assertEqual(payload["routes"], 321)
+        self.assertEqual(payload["last_generation_ago"], "1h")
+        self.assertEqual(payload["generation_time"], "2m5s")
+        self.assertEqual(payload["uptime"], "2h")
+
+    def test_public_status_payload_uses_defaults_when_status_is_missing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            old_status_file = admin_server.STATUS_FILE
+            old_started_at = admin_server.SERVER_STARTED_AT_UNIX
+            admin_server.STATUS_FILE = Path(tmp) / "missing.json"
+            admin_server.SERVER_STARTED_AT_UNIX = 1700000000
+            try:
+                payload = admin_server.public_status_payload(now=1700000005)
+            finally:
+                admin_server.STATUS_FILE = old_status_file
+                admin_server.SERVER_STARTED_AT_UNIX = old_started_at
+
+        self.assertEqual(payload["routes"], 0)
+        self.assertIsNone(payload["last_generation_ago"])
+        self.assertIsNone(payload["generation_time"])
+        self.assertEqual(payload["uptime"], "5s")
+
     def test_backup_and_atomic_write_preserve_previous_list(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -110,6 +160,17 @@ class AdminServerHelperTests(unittest.TestCase):
 
         self.assertIsNone(result)
         send_json.assert_called_once_with({"error": "invalid json"}, admin_server.HTTPStatus.BAD_REQUEST)
+
+    def test_do_get_serves_public_status_without_auth(self):
+        handler = object.__new__(admin_server.AdminHandler)
+        handler.path = "/status.json"
+
+        with mock.patch.object(admin_server, "public_status_payload", return_value={"routes": 1}) as payload_mock:
+            with mock.patch.object(handler, "send_json") as send_json:
+                handler.do_GET()
+
+        payload_mock.assert_called_once_with()
+        send_json.assert_called_once_with({"routes": 1})
 
     def test_validate_setting_normalizes_bool_and_numbers(self):
         self.assertEqual(admin_server.validate_setting("INCLUDE_GOOGLE_RANGES", "true"), "1")

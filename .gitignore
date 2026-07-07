@@ -20,3 +20,4 @@ __pycache__/
 .vscode/
 .DS_Store
 Thumbs.db
+AGENTS.md

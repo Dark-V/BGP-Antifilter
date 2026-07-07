@@ -100,6 +100,7 @@ UPDATE_CHECK_CACHE = {
 }
 RELOAD_LOCK = threading.Lock()
 RELOAD_THREAD = None
+SERVER_STARTED_AT_UNIX = int(time.time())
 
 
 def json_load(path, default):
@@ -115,6 +116,40 @@ def text_load(path):
         return path.read_text(encoding="utf-8")
     except OSError:
         return ""
+
+
+def short_duration(value):
+    try:
+        seconds = max(0, int(float(value)))
+    except (TypeError, ValueError):
+        return None
+    if seconds < 60:
+        return f"{seconds}s"
+    if seconds < 3600:
+        minutes, remainder = divmod(seconds, 60)
+        return f"{minutes}m" if remainder == 0 else f"{minutes}m{remainder}s"
+    if seconds < 86400:
+        hours, remainder = divmod(seconds, 3600)
+        minutes = remainder // 60
+        return f"{hours}h" if minutes == 0 else f"{hours}h{minutes}m"
+    days, remainder = divmod(seconds, 86400)
+    hours = remainder // 3600
+    return f"{days}d" if hours == 0 else f"{days}d{hours}h"
+
+
+def public_status_payload(now=None):
+    now_unix = int(time.time() if now is None else now)
+    status = json_load(STATUS_FILE, {})
+    routes = status.get("routes") if isinstance(status, dict) else {}
+    updated_at_unix = status.get("updated_at_unix") if isinstance(status, dict) else None
+    duration_seconds = status.get("duration_seconds") if isinstance(status, dict) else None
+    route_count = routes.get("final") if isinstance(routes, dict) else None
+    return {
+        "routes": route_count if isinstance(route_count, int) else route_count if isinstance(route_count, float) else 0,
+        "last_generation_ago": short_duration(now_unix - updated_at_unix) if isinstance(updated_at_unix, (int, float)) else None,
+        "generation_time": short_duration(duration_seconds),
+        "uptime": short_duration(now_unix - SERVER_STARTED_AT_UNIX),
+    }
 
 
 def settings_overrides():
@@ -832,6 +867,10 @@ class AdminHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         path = parsed.path
 
+        if path == "/status.json":
+            self.send_json(public_status_payload())
+            return
+
         if path.startswith("/api/"):
             self.handle_api_get(path, parsed)
             return
@@ -840,6 +879,14 @@ class AdminHandler(BaseHTTPRequestHandler):
 
     def do_HEAD(self):
         parsed = urlparse(self.path)
+        if parsed.path == "/status.json":
+            payload = json.dumps(public_status_payload(), ensure_ascii=False).encode("utf-8")
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            return
+
         if parsed.path.startswith("/api/"):
             self.send_response(HTTPStatus.OK)
             self.end_headers()

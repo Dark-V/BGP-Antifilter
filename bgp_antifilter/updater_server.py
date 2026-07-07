@@ -20,6 +20,7 @@ COMPOSE_SERVICES = tuple(
     for item in os.environ.get("UPDATER_COMPOSE_SERVICES", "bird admin").split()
     if item.strip()
 )
+SELF_SERVICE = os.environ.get("UPDATER_SELF_SERVICE", "admin").strip()
 UPDATE_LOCK = threading.Lock()
 UPDATE_THREAD = None
 _TOP_LEVEL_NAME_RE = re.compile(r"^name:\s*(['\"]?)([^#\n]+?)\1\s*(?:#.*)?$", re.MULTILINE)
@@ -160,6 +161,22 @@ def compose_base_command():
     raise FileNotFoundError("docker compose executable is not available inside admin container")
 
 
+def uses_legacy_docker_compose():
+    command, cleanup_path = compose_base_command()
+    try:
+        return Path(command[0]).name == "docker-compose"
+    finally:
+        if cleanup_path is not None:
+            cleanup_path.unlink(missing_ok=True)
+
+
+def restart_services_for_update():
+    if not uses_legacy_docker_compose():
+        return COMPOSE_SERVICES
+    filtered = tuple(service for service in COMPOSE_SERVICES if service != SELF_SERVICE)
+    return filtered or COMPOSE_SERVICES
+
+
 def health_status():
     if not WORKSPACE_DIR.exists():
         return False, f"workspace directory not found: {WORKSPACE_DIR}"
@@ -228,12 +245,30 @@ def run_compose(*args, timeout=1800):
             cleanup_path.unlink(missing_ok=True)
 
 
+def recreate_services(*services, timeout=1800):
+    target_services = tuple(service for service in services if service)
+    if not target_services:
+        return {"ok": True, "stdout": "", "stderr": "", "returncode": 0}
+    remove_result = run_compose("rm", "-f", "-s", *target_services, timeout=timeout)
+    if remove_result["ok"]:
+        return run_compose("up", "-d", *target_services, timeout=timeout)
+
+    combined_output = f'{remove_result.get("stderr", "")}\n{remove_result.get("stdout", "")}'
+    if "No stopped containers" not in combined_output and "No such service" not in combined_output:
+        return remove_result
+    return run_compose("up", "-d", *target_services, timeout=timeout)
+
+
 def rollback(previous_version):
     try:
         update_env_version(ENV_FILE, previous_version)
     except OSError as exc:
         return {"ok": False, "error": str(exc)}
-    result = run_compose("up", "-d", *COMPOSE_SERVICES, timeout=1800)
+    services = restart_services_for_update()
+    if uses_legacy_docker_compose():
+        result = recreate_services(*services, timeout=1800)
+    else:
+        result = run_compose("up", "-d", *services, timeout=1800)
     if result["ok"]:
         return {"ok": True, "version": previous_version}
     return {
@@ -245,6 +280,7 @@ def rollback(previous_version):
 
 def apply_update(version):
     previous_version = configured_version()
+    services = restart_services_for_update()
     write_runtime(
         active=True,
         stage="preparing",
@@ -265,7 +301,10 @@ def apply_update(version):
             raise RuntimeError(pull_result.get("stderr") or pull_result.get("stdout") or "docker compose pull failed")
 
         write_runtime(stage="restarting", message=f"Restarting services with v{version}")
-        up_result = run_compose("up", "-d", *COMPOSE_SERVICES, timeout=1800)
+        if uses_legacy_docker_compose():
+            up_result = recreate_services(*services, timeout=1800)
+        else:
+            up_result = run_compose("up", "-d", *services, timeout=1800)
         if not up_result["ok"]:
             raise RuntimeError(up_result.get("stderr") or up_result.get("stdout") or "docker compose up failed")
 

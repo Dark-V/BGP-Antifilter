@@ -162,6 +162,25 @@ class UpdaterServerTests(unittest.TestCase):
 
                         cleanup_path.unlink(missing_ok=True)
 
+    def test_restart_services_for_update_skips_self_service_for_legacy_compose(self):
+        with mock.patch.object(updater_server, "uses_legacy_docker_compose", return_value=True):
+            with mock.patch.object(updater_server, "COMPOSE_SERVICES", ("bird", "admin")):
+                with mock.patch.object(updater_server, "SELF_SERVICE", "admin"):
+                    self.assertEqual(updater_server.restart_services_for_update(), ("bird",))
+
+    def test_recreate_services_uses_rm_then_up(self):
+        calls = []
+
+        def fake_run_compose(*args, timeout=1800):
+            calls.append(args)
+            return {"ok": True, "stderr": "", "stdout": "", "returncode": 0}
+
+        with mock.patch.object(updater_server, "run_compose", side_effect=fake_run_compose):
+            result = updater_server.recreate_services("bird")
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(calls, [("rm", "-f", "-s", "bird"), ("up", "-d", "bird")])
+
     def test_reconcile_runtime_marks_restart_as_completed_after_version_switch(self):
         with tempfile.TemporaryDirectory() as tmp:
             runtime_file = Path(tmp) / "update-runtime.json"
@@ -259,6 +278,41 @@ class UpdaterServerTests(unittest.TestCase):
             self.assertFalse(runtime["success"])
             self.assertTrue(runtime["rollback"]["ok"])
             self.assertEqual(runtime["rollback"]["version"], "0.2.8")
+
+    def test_apply_update_uses_legacy_recreate_flow_for_non_self_services(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            env_file = Path(tmp) / ".env"
+            version_file = Path(tmp) / "VERSION"
+            runtime_file = Path(tmp) / "update-runtime.json"
+            env_file.write_text("BGP_ANTIFILTER_VERSION=0.2.8\n", encoding="utf-8")
+            version_file.write_text("0.3.2\n", encoding="utf-8")
+
+            compose_calls = []
+
+            def fake_run_compose(*args, timeout=1800):
+                compose_calls.append(args)
+                return {"ok": True, "stderr": "", "stdout": "", "returncode": 0}
+
+            with mock.patch.object(updater_server, "ENV_FILE", env_file):
+                with mock.patch.object(updater_server, "VERSION_FILE", version_file):
+                    with mock.patch.object(updater_server, "UPDATE_RUNTIME_FILE", runtime_file):
+                        with mock.patch.object(updater_server, "COMPOSE_SERVICES", ("bird", "admin")):
+                            with mock.patch.object(updater_server, "SELF_SERVICE", "admin"):
+                                with mock.patch.object(updater_server, "uses_legacy_docker_compose", return_value=True):
+                                    with mock.patch.object(updater_server, "run_compose", side_effect=fake_run_compose):
+                                        updater_server.apply_update("0.3.3")
+
+            self.assertEqual(
+                compose_calls,
+                [
+                    ("pull", "bird", "admin"),
+                    ("rm", "-f", "-s", "bird"),
+                    ("up", "-d", "bird"),
+                ],
+            )
+            runtime = updater_server.read_json(runtime_file, {})
+            self.assertTrue(runtime["success"])
+            self.assertEqual(runtime["current_version"], "0.3.3")
 
     def test_start_update_reports_current_version_from_env_file(self):
         with tempfile.TemporaryDirectory() as tmp:

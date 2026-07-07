@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.4 - 2026-07-07
+
+- Added a public `/status.json` endpoint without authentication that exposes only compact operational counters: generated route count, time since the last generation, generation duration, and admin-server uptime.
+- Fixed self-update on hosts that still use legacy `docker-compose` v1: the updater now recreates only non-admin services during the restart step so the running admin container does not try to replace itself mid-update.
+- Added test coverage for the new public status payload and the legacy Compose restart flow to keep the release path stable in CI.
+
 ## 0.4.3 - 2026-06-25
 
 - Fixed manual reload startup in environments without writable `/etc/bird/generated` during tests: the admin server now treats `reload-result.json` persistence as best-effort, so background reload threads still start and CI passes on GitHub Actions.
