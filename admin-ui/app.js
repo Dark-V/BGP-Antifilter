@@ -62,7 +62,7 @@ const dict = {
     updateRollbackOk: "Rollback completed", updateRollbackFailed: "Rollback failed",
     sourceOptions: "Source options", sourceOptionsHint: "These toggles affect which route sources are included in generation.",
     reloadStarted: "Route reload started in background",
-    domainListSources: "Domain list sources", domainListName: "Name", domainListUrl: "Domain list URL", addSource: "Add source",
+    domainListSources: "Domain list sources", domainListName: "Name", optional: "optional", domainListUrl: "Domain list URL", addSource: "Add source",
     domainListRawEditor: "Domain list source URLs", domainListEmpty: "No domain list sources yet",
     listHintDomainListUrls: "Add URLs of plain-text domain lists here. Each non-empty, non-comment line is treated as a domain, resolved to IPv4, and added as /32 routes.",
     listHintAsns: "Add ASNs here to include all announced IPv4 prefixes of those networks.",
@@ -135,7 +135,7 @@ const dict = {
     updateRollbackOk: "Откат выполнен", updateRollbackFailed: "Откат не удался",
     sourceOptions: "Параметры источников", sourceOptionsHint: "Эти переключатели влияют на то, какие источники попадут в генерацию маршрутов.",
     reloadStarted: "Перезагрузка маршрутов запущена в фоне",
-    domainListSources: "Источники списков доменов", domainListName: "Имя", domainListUrl: "URL списка доменов", addSource: "Добавить источник",
+    domainListSources: "Источники списков доменов", domainListName: "Имя", optional: "необязательно", domainListUrl: "URL списка доменов", addSource: "Добавить источник",
     domainListRawEditor: "URL источников списков доменов", domainListEmpty: "Источников списков доменов пока нет",
     listHintDomainListUrls: "Добавляйте сюда URL текстовых списков доменов. Каждая непустая строка без # считается доменом, резолвится в IPv4 и добавляется как маршрут /32.",
     listHintAsns: "Добавляйте сюда ASN, чтобы включать все анонсируемые IPv4-префиксы этих сетей.",
@@ -2369,11 +2369,9 @@ async function loadDomainListUrls() {
   domainListUrlDirty = false;
 }
 
-function renderDomainListSourcesPanel() {
-  const content = currentDomainListUrlContent();
-  domainListUrlDraftContent = content;
+function domainListSourceCardsHtml(content = currentDomainListUrlContent()) {
   const lines = domainListUrlLines(content);
-  const cards = lines.length ? lines.map(line => {
+  return lines.length ? lines.map(line => {
     const entry = parseDomainListSourceLine(line.value);
     if (!entry) return "";
     const record = listSourceRecord("domain-list-urls", line.value);
@@ -2392,6 +2390,19 @@ function renderDomainListSourcesPanel() {
         ${renderListSourceStats(record)}
       </article>`;
   }).join("") : `<div class="muted-box">${t("domainListEmpty")}</div>`;
+}
+
+function refreshDomainListSourceCards() {
+  const container = document.querySelector(".domain-list-url-cards");
+  if (!container) return;
+  container.innerHTML = domainListSourceCardsHtml();
+  renderIcons();
+}
+
+function renderDomainListSourcesPanel() {
+  const content = currentDomainListUrlContent();
+  const wasOpen = Boolean(document.querySelector(".domain-list-url-raw")?.open);
+  domainListUrlDraftContent = content;
 
   $("list-source-settings").innerHTML = `
     <article class="panel settings-section domain-list-source-panel">
@@ -2403,11 +2414,11 @@ function renderDomainListSourcesPanel() {
         <span class="chip">URL → domains → DNS → /32</span>
       </div>
       <form id="domain-list-url-form" class="inline-form domain-list-url-form">
-        <input id="domain-list-name-input" type="text" autocomplete="off" placeholder="${escapeHtml(t("domainListName"))} (optional)">
+        <input id="domain-list-name-input" type="text" autocomplete="off" placeholder="${escapeHtml(t("domainListName"))} (${escapeHtml(t("optional"))})">
         <input id="domain-list-url-input" type="url" autocomplete="off" placeholder="${escapeHtml(t("domainListUrl"))}: https://example.com/list.txt">
         <button type="submit"><i data-lucide="plus"></i><span>${escapeHtml(t("addSource"))}</span></button>
       </form>
-      <div class="list-tiles domain-list-url-cards">${cards}</div>
+      <div class="list-tiles domain-list-url-cards">${domainListSourceCardsHtml(content)}</div>
       <details class="raw-list-editor domain-list-url-raw">
         <summary>${escapeHtml(t("domainListRawEditor"))}</summary>
         <textarea id="domain-list-url-editor" spellcheck="false">${escapeHtml(content)}</textarea>
@@ -2419,6 +2430,8 @@ function renderDomainListSourcesPanel() {
       </details>
       <p id="domain-list-url-status" class="${domainListUrlDirty ? "status-warn" : ""}">${escapeHtml(domainListUrlDirty ? t("unsavedChanges") : domainListUrlSavedPath)}</p>
     </article>`;
+  const rawEditor = document.querySelector(".domain-list-url-raw");
+  if (rawEditor && wasOpen) rawEditor.open = true;
   renderIcons();
 }
 
@@ -2456,8 +2469,9 @@ async function addDomainListUrl(value, name = "") {
   const url = String(value || "").trim();
   if (!url) return;
   const item = serializeDomainListSource(name, url);
-  const lines = domainListUrlLines().map(line => line.value);
-  if (lines.some(line => parseDomainListSourceLine(line)?.url === url)) {
+  const content = currentDomainListUrlContent();
+  const activeLines = domainListUrlLines(content).map(line => line.value);
+  if (activeLines.some(line => parseDomainListSourceLine(line)?.url === url)) {
     const status = $("domain-list-url-status");
     if (status) {
       status.textContent = t("noChanges");
@@ -2465,6 +2479,7 @@ async function addDomainListUrl(value, name = "") {
     }
     return;
   }
+  const lines = String(content).split(/\r?\n/).filter((line, index, all) => index < all.length - 1 || line.trim());
   lines.push(item);
   domainListUrlDraftContent = `${lines.join("\n")}\n`;
   domainListUrlDirty = domainListUrlDraftContent !== domainListUrlSavedContent;
@@ -2503,7 +2518,7 @@ function renderListSourceStats(record) {
 
 function renderListTiles() {
   if (currentList === "include-domains") {
-    renderDomainListSourcesPanel();
+    refreshDomainListSourceCards();
   }
   if (currentList === "google-ranges") {
     $("list-tiles").innerHTML = "";
