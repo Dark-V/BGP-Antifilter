@@ -49,7 +49,7 @@ class DockerSmokeTests(unittest.TestCase):
         self.generated_dir = self.root / "generated"
         self.config_dir = self.generated_dir / "config"
         self.config_dir.mkdir(parents=True, exist_ok=True)
-        for name in ("include-asns.txt", "include-domains.txt", "exclude-domains.txt"):
+        for name in ("domain-list-urls.txt", "include-asns.txt", "include-domains.txt", "exclude-domains.txt"):
             (self.config_dir / name).write_text("", encoding="utf-8")
 
         self.repo_root = Path(__file__).resolve().parents[1]
@@ -102,6 +102,7 @@ class DockerSmokeTests(unittest.TestCase):
                   ROUTER_ID: "192.168.55.5"
                   BGP_COMMUNITY: "65432,500"
                   LISTS_FILE: /etc/bird/generated/config/lists.txt
+                  DOMAIN_LIST_URLS_FILE: /etc/bird/generated/config/domain-list-urls.txt
                   INCLUDE_ASNS_FILE: /etc/bird/generated/config/include-asns.txt
                   INCLUDE_DOMAINS_FILE: /etc/bird/generated/config/include-domains.txt
                   EXCLUDE_DOMAINS_FILE: /etc/bird/generated/config/exclude-domains.txt
