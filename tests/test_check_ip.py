@@ -85,3 +85,22 @@ class CheckIpTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DomainListSourceTests(unittest.TestCase):
+    def test_source_matches_uses_resolved_cache_for_domain_list_url(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = Path(tmp) / "resolved.cache"
+            cache.write_text("192.0.2.55/32\n", encoding="utf-8")
+            source = {
+                "kind": "domain-list-url",
+                "name": "https://example.com/domains.txt",
+                "url": "https://example.com/domains.txt",
+                "status": "fresh",
+                "cache_file": str(Path(tmp) / "domains.cache"),
+                "resolved_cache_file": str(cache),
+            }
+
+            matches = check_ip.source_matches(ipaddress.ip_address("192.0.2.55"), source)
+
+        self.assertEqual(matches, [ipaddress.ip_network("192.0.2.55/32")])
