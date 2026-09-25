@@ -22,6 +22,7 @@ const dict = {
     collapsedRemoved: "Merged duplicates and overlaps", finalRoutes: "Final active routes",
     addItem: "Add", rawEditor: "Raw editor", remove: "Remove", notSeen: "No status yet",
     comments: "Comments", emptyList: "No entries yet", itemPlaceholder: "New entry",
+    bulkPlaceholder: "One entry per line. You can paste a whole list.", noNewEntries: "No new entries",
     logs: "Logs", containerLogs: "Container logs", checkedAddresses: "Checked addresses",
     downloadRoutes: "Download routes.conf", restartRequired: "restart", overridden: "changed",
     updateSettings: "Update", securitySettings: "Generation safety", birdSettings: "BIRD / BGP",
@@ -90,6 +91,7 @@ const dict = {
     collapsedRemoved: "Склеено дублей и пересечений", finalRoutes: "Итоговые активные маршруты",
     addItem: "Добавить", rawEditor: "Текстовый редактор", remove: "Удалить", notSeen: "Статуса пока нет",
     comments: "Комментарии", emptyList: "Записей пока нет", itemPlaceholder: "Новая запись",
+    bulkPlaceholder: "По одной записи на строку. Можно вставить список целиком.", noNewEntries: "Новых записей нет",
     logs: "Логи", containerLogs: "Логи контейнера", checkedAddresses: "Проверенные адреса",
     downloadRoutes: "Скачать routes.conf", restartRequired: "перезапуск", overridden: "изменено",
     updateSettings: "Обновление", securitySettings: "Безопасность генерации", birdSettings: "BIRD / BGP",
@@ -2093,7 +2095,7 @@ async function loadList(name) {
   listSavedPath = data.path || "";
   $("list-editor").value = listSavedContent;
   $("add-list-input").value = "";
-  $("add-list-input").placeholder = `${t("itemPlaceholder")}: ${listLabels[name]}`;
+  $("add-list-input").placeholder = `${t("bulkPlaceholder")} ${listLabels[name]}`;
   markListDirty(false);
   renderListHint(name);
   renderListTiles();
@@ -2117,8 +2119,10 @@ async function saveList() {
       "ok"
     );
     renderListTiles();
+    return true;
   } catch (err) {
     refreshListDirtyState(`${t("failed")}: ${typeof err === "string" ? err : (err.error || err.message || "request failed")}`, "fail");
+    return false;
   }
 }
 
@@ -2346,18 +2350,70 @@ function renderListTiles() {
   renderIcons();
 }
 
-async function addListItem(value) {
+function normalizeListInputValue(value) {
   const item = String(value || "").trim();
-  if (!item) return;
-  const lines = $("list-editor").value.split(/\r?\n/).filter((line, index, all) => index < all.length - 1 || line.trim());
-  if (lines.some(line => line.trim() === item)) {
-    $("list-save-status").textContent = `${t("saved")}: ${item}`;
+  if (!item || item.startsWith("#")) return "";
+  if (currentList === "include-domains" || currentList === "exclude-domains") {
+    return item.toLowerCase();
+  }
+  if (currentList === "asns") {
+    return normalizeAsn(item);
+  }
+  if (currentList === "countries") {
+    return normalizeCountryCode(item);
+  }
+  return item;
+}
+
+function listItemKey(listName, value) {
+  const item = String(value || "").trim();
+  if (listName === "include-domains" || listName === "exclude-domains") {
+    return item.toLowerCase();
+  }
+  if (listName === "asns") {
+    return normalizeAsn(item);
+  }
+  if (listName === "countries") {
+    return normalizeCountryCode(item);
+  }
+  return item;
+}
+
+async function addListItem(value) {
+  const incoming = String(value || "")
+    .split(/\r?\n/)
+    .map(normalizeListInputValue)
+    .filter(Boolean);
+  if (!incoming.length) return;
+
+  const lines = $("list-editor").value
+    .split(/\r?\n/)
+    .filter((line, index, all) => index < all.length - 1 || line.trim());
+  const existing = new Set(
+    lines
+      .map(line => line.trim())
+      .filter(line => line && !line.startsWith("#"))
+      .map(line => listItemKey(currentList, line))
+  );
+
+  let added = 0;
+  for (const item of incoming) {
+    const key = listItemKey(currentList, item);
+    if (existing.has(key)) continue;
+    lines.push(item);
+    existing.add(key);
+    added += 1;
+  }
+
+  if (!added) {
+    refreshListDirtyState(t("noNewEntries"), "warn");
     return;
   }
-  lines.push(item);
+
   $("list-editor").value = `${lines.join("\n")}\n`;
-  await saveList();
-  $("add-list-input").value = "";
+  if (await saveList()) {
+    $("add-list-input").value = "";
+  }
 }
 
 async function removeListItem(index) {
@@ -2488,6 +2544,12 @@ $("apply-settings-btn").addEventListener("click", applySettingsNow);
 $("add-list-form").addEventListener("submit", event => {
   event.preventDefault();
   addListItem($("add-list-input").value);
+});
+$("add-list-input").addEventListener("keydown", event => {
+  if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
+    event.preventDefault();
+    addListItem($("add-list-input").value);
+  }
 });
 $("list-tiles").addEventListener("click", event => {
   const button = event.target.closest("[data-remove-index]");
