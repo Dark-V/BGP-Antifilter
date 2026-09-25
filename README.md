@@ -36,7 +36,7 @@ BGP Antifilter - контейнеризированная конфигураци
 
 1. Скопируйте пример окружения: `cp .env.example .env`.
 2. Проверьте `MY_AS`, `MT_AS`, `MT_IP`, `BIRD_IP`, `ROUTER_ID`, `BGP_COMMUNITY`.
-3. Добавьте хотя бы один URL-источник в `generated/config/lists.txt` или подготовьте его через дефолты при первом старте.
+3. Добавьте хотя бы один источник в `generated/config/lists.txt` или `generated/config/domain-list-urls.txt`, либо используйте дефолты первого запуска.
 4. При необходимости включите админку: `ADMIN_ENABLED=1`, `ADMIN_PORT=8080`, `ADMIN_PASSWORD=change-me`.
 5. Поднимите контейнер: `docker compose up -d --build`.
 6. Проверьте состояние: `docker compose ps` и `docker compose logs -f bird admin`.
