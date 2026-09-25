@@ -224,11 +224,13 @@ discord.com
 # comment
 ```
 
-Then `generated/config/domain-list-urls.txt` contains only:
+The source can be stored in `generated/config/domain-list-urls.txt` with an explicit display name:
 
 ```text
-https://example.com/list.txt
+YouTube | https://example.com/list.txt
 ```
+
+The format is `Name | URL`. The name is optional: a plain URL remains valid, and the admin UI derives a display name from the host/file name. Lines starting with `#` remain regular comments and are not used as source labels.
 
 A domain that temporarily fails to resolve is skipped using best-effort behavior. The downloaded list and DNS results are cached.
 
