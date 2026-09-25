@@ -157,6 +157,7 @@ let listSavedContent = "";
 let listSavedPath = "";
 let listDirty = false;
 let domainListUrlSavedContent = "";
+let domainListUrlDraftContent = "";
 let domainListUrlSavedPath = "";
 let domainListUrlDirty = false;
 let settingsSavedValues = {};
@@ -2111,6 +2112,7 @@ async function loadList(name) {
     await loadDomainListUrls();
   } else {
     domainListUrlSavedContent = "";
+    domainListUrlDraftContent = "";
     domainListUrlSavedPath = "";
     domainListUrlDirty = false;
   }
@@ -2321,7 +2323,7 @@ function renderCountriesTab() {
 
 function currentDomainListUrlContent() {
   const editor = $("domain-list-url-editor");
-  return editor ? editor.value : domainListUrlSavedContent;
+  return editor ? editor.value : domainListUrlDraftContent;
 }
 
 function domainListUrlLines(content = currentDomainListUrlContent()) {
@@ -2331,12 +2333,15 @@ function domainListUrlLines(content = currentDomainListUrlContent()) {
 async function loadDomainListUrls() {
   const data = await api("/api/lists/domain-list-urls");
   domainListUrlSavedContent = data.content || "";
+  domainListUrlDraftContent = domainListUrlSavedContent;
   domainListUrlSavedPath = data.path || "";
   domainListUrlDirty = false;
 }
 
 function renderDomainListSourcesPanel() {
-  const lines = domainListUrlLines();
+  const content = currentDomainListUrlContent();
+  domainListUrlDraftContent = content;
+  const lines = domainListUrlLines(content);
   const cards = lines.length ? lines.map(line => {
     const record = listSourceRecord("domain-list-urls", line.value);
     const level = record ? eventLevel(record) : "warn";
@@ -2368,7 +2373,7 @@ function renderDomainListSourcesPanel() {
       <div class="list-tiles domain-list-url-cards">${cards}</div>
       <details class="raw-list-editor domain-list-url-raw">
         <summary>${escapeHtml(t("domainListRawEditor"))}</summary>
-        <textarea id="domain-list-url-editor" spellcheck="false">${escapeHtml(domainListUrlSavedContent)}</textarea>
+        <textarea id="domain-list-url-editor" spellcheck="false">${escapeHtml(content)}</textarea>
         <div class="editor-actions">
           <button type="button" id="save-domain-list-urls-btn" ${domainListUrlDirty ? "" : "disabled"}>
             <i data-lucide="save"></i><span>${escapeHtml(t("save"))}</span>
@@ -2382,14 +2387,16 @@ function renderDomainListSourcesPanel() {
 
 async function saveDomainListUrls() {
   const editor = $("domain-list-url-editor");
-  let content = editor ? editor.value : domainListUrlSavedContent;
+  let content = editor ? editor.value : domainListUrlDraftContent;
   if (content && !content.endsWith("\n")) content += "\n";
+  domainListUrlDraftContent = content;
   try {
     const result = await api("/api/lists/domain-list-urls", {
       method: "PUT",
       body: JSON.stringify({content})
     });
     domainListUrlSavedContent = content;
+    domainListUrlDraftContent = content;
     domainListUrlDirty = false;
     renderDomainListSourcesPanel();
     const status = $("domain-list-url-status");
@@ -2421,22 +2428,18 @@ async function addDomainListUrl(value) {
     return;
   }
   lines.push(item);
-  domainListUrlSavedContent = `${lines.join("\n")}\n`;
-  domainListUrlDirty = true;
+  domainListUrlDraftContent = `${lines.join("\n")}\n`;
+  domainListUrlDirty = domainListUrlDraftContent !== domainListUrlSavedContent;
   renderDomainListSourcesPanel();
-  const editor = $("domain-list-url-editor");
-  if (editor) editor.value = domainListUrlSavedContent;
   await saveDomainListUrls();
 }
 
 async function removeDomainListUrl(index) {
   const lines = String(currentDomainListUrlContent()).split(/\r?\n/);
   lines.splice(index, 1);
-  domainListUrlSavedContent = lines.join("\n");
-  domainListUrlDirty = true;
+  domainListUrlDraftContent = lines.join("\n");
+  domainListUrlDirty = domainListUrlDraftContent !== domainListUrlSavedContent;
   renderDomainListSourcesPanel();
-  const editor = $("domain-list-url-editor");
-  if (editor) editor.value = domainListUrlSavedContent;
   await saveDomainListUrls();
 }
 
@@ -2666,7 +2669,8 @@ $("list-source-settings").addEventListener("click", event => {
 });
 $("list-source-settings").addEventListener("input", event => {
   if (event.target.id === "domain-list-url-editor") {
-    domainListUrlDirty = event.target.value !== domainListUrlSavedContent;
+    domainListUrlDraftContent = event.target.value;
+    domainListUrlDirty = domainListUrlDraftContent !== domainListUrlSavedContent;
     const button = $("save-domain-list-urls-btn");
     if (button) button.disabled = !domainListUrlDirty;
     const status = $("domain-list-url-status");
