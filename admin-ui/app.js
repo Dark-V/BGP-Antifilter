@@ -20,7 +20,7 @@ const dict = {
     sourceDetails: "Source details", downloaded: "Downloaded", resolvedRoutes: "Resolved routes",
     routeMath: "Route math", routeCandidates: "Before filtering", afterExclusions: "After exclusion rules",
     collapsedRemoved: "Merged duplicates and overlaps", finalRoutes: "Final active routes",
-    addItem: "Add", rawEditor: "Raw editor", remove: "Remove", notSeen: "No status yet",
+    addItem: "Add", editItem: "Edit", cancel: "Cancel", rawEditor: "Raw editor", remove: "Remove", notSeen: "No status yet",
     comments: "Comments", emptyList: "No entries yet", itemPlaceholder: "New entry",
     logs: "Logs", containerLogs: "Container logs", checkedAddresses: "Checked addresses",
     downloadRoutes: "Download routes.conf", restartRequired: "restart", overridden: "changed",
@@ -92,7 +92,7 @@ const dict = {
     sourceDetails: "Детали источников", downloaded: "Загружено", resolvedRoutes: "Найдено маршрутов",
     routeMath: "Математика маршрутов", routeCandidates: "До фильтрации", afterExclusions: "После правил исключения",
     collapsedRemoved: "Склеено дублей и пересечений", finalRoutes: "Итоговые активные маршруты",
-    addItem: "Добавить", rawEditor: "Текстовый редактор", remove: "Удалить", notSeen: "Статуса пока нет",
+    addItem: "Добавить", editItem: "Редактировать", cancel: "Отмена", rawEditor: "Текстовый редактор", remove: "Удалить", notSeen: "Статуса пока нет",
     comments: "Комментарии", emptyList: "Записей пока нет", itemPlaceholder: "Новая запись",
     logs: "Логи", containerLogs: "Логи контейнера", checkedAddresses: "Проверенные адреса",
     downloadRoutes: "Скачать routes.conf", restartRequired: "перезапуск", overridden: "изменено",
@@ -160,6 +160,8 @@ let domainListUrlSavedContent = "";
 let domainListUrlDraftContent = "";
 let domainListUrlSavedPath = "";
 let domainListUrlDirty = false;
+let listEditIndex = null;
+let domainListEditIndex = null;
 let settingsSavedValues = {};
 let settingsDirty = false;
 let checkIpPending = false;
@@ -2085,6 +2087,8 @@ async function loadList(name) {
     return;
   }
   currentList = name;
+  listEditIndex = null;
+  domainListEditIndex = null;
   document.querySelectorAll("[data-list]").forEach(button => button.classList.toggle("active", button.dataset.list === name));
   $("list-title").textContent = listLabels[name];
   const special = isSpecialList(name);
@@ -2114,6 +2118,7 @@ async function loadList(name) {
   $("add-list-name-input").placeholder = `${t("domainListName")} (${t("optional")})`;
   $("add-list-name-input").classList.toggle("hidden", name !== "urls");
   $("add-list-form").classList.toggle("named-url-form", name === "urls");
+  setListEditForm();
   markListDirty(false);
   if (name === "include-domains") {
     await loadDomainListUrls();
@@ -2392,9 +2397,14 @@ function domainListSourceCardsHtml(content = currentDomainListUrlContent()) {
             <strong>${escapeHtml(entry.name)}</strong>
             <small title="${escapeHtml(entry.url)}">${escapeHtml(entry.url)}</small>
           </div>
-          <button type="button" class="icon-button list-remove-btn" data-domain-list-remove-index="${line.index}" title="${t("remove")}" aria-label="${t("remove")}">
-            <i data-lucide="trash-2"></i>
-          </button>
+          <div class="list-card-actions">
+            <button type="button" class="icon-button list-edit-btn" data-domain-list-edit-index="${line.index}" title="${t("editItem")}" aria-label="${t("editItem")}">
+              <i data-lucide="square-pen"></i>
+            </button>
+            <button type="button" class="icon-button list-remove-btn" data-domain-list-remove-index="${line.index}" title="${t("remove")}" aria-label="${t("remove")}">
+              <i data-lucide="trash-2"></i>
+            </button>
+          </div>
         </div>
         ${renderListSourceStats(record)}
       </article>`;
@@ -2425,7 +2435,13 @@ function renderDomainListSourcesPanel() {
       <form id="domain-list-url-form" class="inline-form domain-list-url-form">
         <input id="domain-list-name-input" type="text" autocomplete="off" placeholder="${escapeHtml(t("domainListName"))} (${escapeHtml(t("optional"))})">
         <input id="domain-list-url-input" type="url" autocomplete="off" placeholder="${escapeHtml(t("domainListUrl"))}: https://example.com/list.txt">
-        <button type="submit"><i data-lucide="plus"></i><span>${escapeHtml(t("addSource"))}</span></button>
+        <button type="submit">
+          <i data-lucide="${domainListEditIndex === null ? "plus" : "save"}"></i>
+          <span>${escapeHtml(domainListEditIndex === null ? t("addSource") : t("save"))}</span>
+        </button>
+        <button type="button" id="cancel-domain-list-edit-btn" class="${domainListEditIndex === null ? "hidden" : ""}" title="${escapeHtml(t("cancel"))}" aria-label="${escapeHtml(t("cancel"))}">
+          <i data-lucide="x"></i>
+        </button>
       </form>
       <div class="list-tiles domain-list-url-cards">${domainListSourceCardsHtml(content)}</div>
       <details class="raw-list-editor domain-list-url-raw">
@@ -2474,13 +2490,32 @@ async function saveDomainListUrls() {
   }
 }
 
+function startDomainListEdit(index) {
+  const line = parseListLines(currentDomainListUrlContent()).find(item => item.index === index && item.active);
+  const entry = line ? parseNamedUrlSourceLine(line.value) : null;
+  if (!entry) return;
+  domainListEditIndex = index;
+  renderDomainListSourcesPanel();
+  $("domain-list-name-input").value = entry.explicitName ? entry.name : "";
+  $("domain-list-url-input").value = entry.url;
+  $("domain-list-url-input").focus();
+}
+
+function cancelDomainListEdit() {
+  domainListEditIndex = null;
+  renderDomainListSourcesPanel();
+}
+
 async function addDomainListUrl(value, name = "") {
   const url = String(value || "").trim();
   if (!url) return;
   const item = serializeNamedUrlSource(name, url);
   const content = currentDomainListUrlContent();
-  const activeLines = domainListUrlLines(content).map(line => line.value);
-  if (activeLines.some(line => parseNamedUrlSourceLine(line)?.url === url)) {
+  const lines = String(content).split(/\r?\n/).filter((line, index, all) => index < all.length - 1 || line.trim());
+  const duplicate = lines.some((line, index) =>
+    index !== domainListEditIndex && parseNamedUrlSourceLine(line)?.url === url
+  );
+  if (duplicate) {
     const status = $("domain-list-url-status");
     if (status) {
       status.textContent = t("noChanges");
@@ -2488,8 +2523,12 @@ async function addDomainListUrl(value, name = "") {
     }
     return;
   }
-  const lines = String(content).split(/\r?\n/).filter((line, index, all) => index < all.length - 1 || line.trim());
-  lines.push(item);
+  if (domainListEditIndex === null) {
+    lines.push(item);
+  } else {
+    lines[domainListEditIndex] = item;
+  }
+  domainListEditIndex = null;
   domainListUrlDraftContent = `${lines.join("\n")}\n`;
   domainListUrlDirty = domainListUrlDraftContent !== domainListUrlSavedContent;
   renderDomainListSourcesPanel();
@@ -2557,9 +2596,15 @@ function renderListTiles() {
             <strong>${escapeHtml(title)}</strong>
             ${subtitle ? `<small title="${escapeHtml(subtitle)}">${escapeHtml(subtitle)}</small>` : ""}
           </div>
-          <button class="icon-button list-remove-btn" data-remove-index="${line.index}" title="${t("remove")}" aria-label="${t("remove")}">
-            <i data-lucide="trash-2"></i>
-          </button>
+          <div class="list-card-actions">
+            ${namedUrl ? `
+              <button type="button" class="icon-button list-edit-btn" data-edit-index="${line.index}" title="${t("editItem")}" aria-label="${t("editItem")}">
+                <i data-lucide="square-pen"></i>
+              </button>` : ""}
+            <button class="icon-button list-remove-btn" data-remove-index="${line.index}" title="${t("remove")}" aria-label="${t("remove")}">
+              <i data-lucide="trash-2"></i>
+            </button>
+          </div>
         </div>
         ${renderListSourceStats(record)}
       </article>`;
@@ -2570,24 +2615,46 @@ function renderListTiles() {
   renderIcons();
 }
 
+function setListEditForm(entry = null, index = null) {
+  listEditIndex = index;
+  $("add-list-name-input").value = entry?.explicitName ? entry.name : "";
+  $("add-list-input").value = entry?.url || "";
+  $("add-list-submit-icon").setAttribute("data-lucide", index === null ? "plus" : "save");
+  $("add-list-submit-text").textContent = index === null ? t("addItem") : t("save");
+  $("cancel-list-edit-btn").classList.toggle("hidden", index === null);
+  renderIcons();
+}
+
+function startListEdit(index) {
+  if (currentList !== "urls") return;
+  const line = parseListLines($("list-editor").value).find(item => item.index === index && item.active);
+  const entry = line ? parseNamedUrlSourceLine(line.value) : null;
+  if (!entry) return;
+  setListEditForm(entry, index);
+  $("add-list-input").focus();
+}
+
 async function addListItem(value, name = "") {
   const rawValue = String(value || "").trim();
   if (!rawValue) return;
   const item = currentList === "urls" ? serializeNamedUrlSource(name, rawValue) : rawValue;
   const lines = $("list-editor").value.split(/\r?\n/).filter((line, index, all) => index < all.length - 1 || line.trim());
   const duplicate = currentList === "urls"
-    ? lines.some(line => parseNamedUrlSourceLine(line)?.url === rawValue)
+    ? lines.some((line, index) => index !== listEditIndex && parseNamedUrlSourceLine(line)?.url === rawValue)
     : lines.some(line => line.trim() === item);
   if (duplicate) {
     $("list-save-status").textContent = t("noChanges");
     setStatusTone($("list-save-status"), "warn");
     return;
   }
-  lines.push(item);
+  if (currentList === "urls" && listEditIndex !== null) {
+    lines[listEditIndex] = item;
+  } else {
+    lines.push(item);
+  }
   $("list-editor").value = `${lines.join("\n")}\n`;
   await saveList();
-  $("add-list-input").value = "";
-  $("add-list-name-input").value = "";
+  setListEditForm();
 }
 
 async function removeListItem(index) {
@@ -2720,11 +2787,17 @@ $("add-list-form").addEventListener("submit", event => {
   addListItem($("add-list-input").value, $("add-list-name-input").value);
 });
 $("list-tiles").addEventListener("click", event => {
-  const button = event.target.closest("[data-remove-index]");
-  if (button) {
-    removeListItem(Number(button.dataset.removeIndex));
+  const editButton = event.target.closest("[data-edit-index]");
+  if (editButton) {
+    startListEdit(Number(editButton.dataset.editIndex));
+    return;
+  }
+  const removeButton = event.target.closest("[data-remove-index]");
+  if (removeButton) {
+    removeListItem(Number(removeButton.dataset.removeIndex));
   }
 });
+$("cancel-list-edit-btn").addEventListener("click", () => setListEditForm());
 $("list-source-settings").addEventListener("submit", event => {
   if (event.target.id === "domain-list-url-form") {
     event.preventDefault();
@@ -2732,9 +2805,18 @@ $("list-source-settings").addEventListener("submit", event => {
   }
 });
 $("list-source-settings").addEventListener("click", event => {
+  const editButton = event.target.closest("[data-domain-list-edit-index]");
+  if (editButton) {
+    startDomainListEdit(Number(editButton.dataset.domainListEditIndex));
+    return;
+  }
   const removeButton = event.target.closest("[data-domain-list-remove-index]");
   if (removeButton) {
     removeDomainListUrl(Number(removeButton.dataset.domainListRemoveIndex));
+    return;
+  }
+  if (event.target.closest("#cancel-domain-list-edit-btn")) {
+    cancelDomainListEdit();
     return;
   }
   if (event.target.closest("#save-domain-list-urls-btn")) {
