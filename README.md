@@ -52,7 +52,8 @@ BGP Antifilter - контейнеризированная конфигураци
 - `admin-ui/` - статические файлы веб-админки.
 - `default-lists/` - дефолтные списки источников, ASN, стран и include/exclude-доменов, которые копируются при первом старте.
 - `.env.example` - пример локальных настроек AS, IP-адресов и интервала обновления.
-- `generated/config/lists.txt` - рабочий список исходных IP и подсетей пользователя.
+- `generated/config/lists.txt` - рабочий список URL-источников IP и подсетей пользователя.
+- `generated/config/domain-list-urls.txt` - URL текстовых списков доменов; домены из них резолвятся в IPv4 и добавляются как `/32`.
 - `generated/config/include-asns.txt` - рабочий список ASN пользователя.
 - `generated/config/include-countries.txt` - рабочий список стран пользователя в формате ISO 3166-1 alpha-2 (`US`, `DE`, `NL`).
 - `generated/config/include-domains.txt` - рабочий список include-доменов пользователя.
@@ -67,11 +68,12 @@ BGP Antifilter - контейнеризированная конфигураци
 4. ASN из `generated/config/include-asns.txt` загружаются из RouteViews API как анонсированные IPv4-префиксы.
 5. Страны из `generated/config/include-countries.txt` загружаются как IPv4-префиксы страны: сначала через RIPE Stat, а если он недоступен, через delegated stats RIR.
 6. Если `INCLUDE_GOOGLE_RANGES=1`, загружаются Google `goog.json` и `cloud.json`; Cloud-префиксы вычитаются из общего списка Google.
-7. `scripts/generate-routes.py` извлекает и валидирует IPv4/CIDR-маршруты.
-8. Домены из `generated/config/include-domains.txt` резолвятся в IPv4 и добавляются как `/32`.
-9. Домены из `generated/config/exclude-domains.txt` резолвятся в IPv4 и вычитаются из итогового набора маршрутов.
-10. Итоговый файл `generated/routes.conf` подключается в BIRD как статические `blackhole`-маршруты.
-11. BIRD экспортирует маршруты в MikroTik через BGP.
+7. URL из `generated/config/domain-list-urls.txt` скачиваются как текстовые списки доменов; каждый домен резолвится в IPv4 и добавляется как `/32`.
+8. `scripts/generate-routes.py` извлекает и валидирует IPv4/CIDR-маршруты.
+9. Домены из `generated/config/include-domains.txt` резолвятся в IPv4 и добавляются как `/32`.
+10. Домены из `generated/config/exclude-domains.txt` резолвятся в IPv4 и вычитаются из итогового набора маршрутов.
+11. Итоговый файл `generated/routes.conf` подключается в BIRD как статические `blackhole`-маршруты.
+12. BIRD экспортирует маршруты в MikroTik через BGP.
 
 ## Настройка
 
@@ -81,7 +83,7 @@ BGP Antifilter - контейнеризированная конфигураци
 cp .env.example .env
 ```
 
-Если вы обновляетесь с предыдущей структуры репозитория, перенесите свои кастомные списки в `generated/config/`: `lists.txt`, `include-asns.txt`, `include-countries.txt`, `include-domains.txt`, `exclude-domains.txt`.
+Если вы обновляетесь с предыдущей структуры репозитория, перенесите свои кастомные списки в `generated/config/`: `lists.txt`, `domain-list-urls.txt`, `include-asns.txt`, `include-countries.txt`, `include-domains.txt`, `exclude-domains.txt`.
 
 Основные параметры:
 
@@ -120,7 +122,7 @@ ADMIN_PASSWORD=
 - `UPDATE_INTERVAL` - интервал обновления списков в секундах.
 - `CACHE_MAX_AGE` - максимальный возраст кеша источника в секундах, по умолчанию 7 дней.
 - `INCLUDE_GOOGLE_RANGES` - `1` добавляет default Google service ranges из `goog.json` за вычетом Google Cloud из `cloud.json`; `0` отключает этот источник.
-- `REQUIRE_ALL_URL_SOURCES` - `1` делает каждый URL из `generated/config/lists.txt` обязательным; `0` по умолчанию разрешает пропустить недоступный URL-источник, если итоговая таблица все равно собирается из остальных данных.
+- `REQUIRE_ALL_URL_SOURCES` - `1` делает каждый URL из `generated/config/lists.txt` и `generated/config/domain-list-urls.txt` обязательным; `0` по умолчанию разрешает пропустить недоступный URL-источник, если итоговая таблица все равно собирается из остальных данных.
 - `MIN_PREFIX_LENGTH` - минимальная длина IPv4-префикса, разрешенная из внешних источников, по умолчанию `8`.
 - `ALLOW_BROAD_ROUTES` - `1` отключает защиту от слишком широких IPv4-маршрутов; по умолчанию `0`.
 - `UPDATE_LOCK_DIR` - lock-директория, предотвращающая параллельные обновления.
@@ -150,7 +152,7 @@ ADMIN_PASSWORD=change-me
 Основные разделы:
 
 - `Панель` - текущее состояние BIRD/BGP, количество маршрутов, время последней генерации и кнопки `dry-run`, `check-sources`, `reload`.
-- `Списки` - редактирование `lists.txt`, `include-asns.txt`, `include-countries.txt`, `include-domains.txt`, `exclude-domains.txt` без конфликтов с `git pull`.
+- `Списки` - редактирование `lists.txt`, `domain-list-urls.txt`, `include-asns.txt`, `include-countries.txt`, `include-domains.txt`, `exclude-domains.txt` без конфликтов с `git pull`.
 - `Инструменты` - метрики, активные маршруты, логи контейнера и диагностика IP/домена.
 - `Настройки` - runtime-параметры генератора и BGP/healthcheck-параметры админки.
 
@@ -162,7 +164,7 @@ ADMIN_PASSWORD=change-me
 
 При `ADMIN_ENABLED=1` отдельный сервис `admin` поднимается всегда. Это убирает конкуренцию за stdout/stderr у контейнера BIRD и делает поведение одинаковым на Linux и Docker Desktop для Windows/macOS. Сервис `admin` публикует порт через обычный `ports:`, а с BIRD общается через общий `/run/bird` socket и общие файлы `generated/`.
 
-Рабочие файлы `generated/config/lists.txt`, `generated/config/include-asns.txt`, `generated/config/include-countries.txt`, `generated/config/include-domains.txt` и `generated/config/exclude-domains.txt` хранятся вне git и редактируются админкой без конфликтов с `git pull`. Если файла еще нет, контейнер создает его из дефолта из `default-lists/`. Перед сохранением создается backup в `generated/list-backups`.
+Рабочие файлы `generated/config/lists.txt`, `generated/config/domain-list-urls.txt`, `generated/config/include-asns.txt`, `generated/config/include-countries.txt`, `generated/config/include-domains.txt` и `generated/config/exclude-domains.txt` хранятся вне git и редактируются админкой без конфликтов с `git pull`. Если файла еще нет, контейнер создает его из дефолта из `default-lists/`. Перед сохранением создается backup в `generated/list-backups`.
 
 Во вкладке `Countries` админка показывает заранее подготовленный список стран с тумблерами. В файл `include-countries.txt` сохраняются двухбуквенные коды ISO (`UA`, `US`, `DE`), так что для типового сценария не нужно вручную искать подсети страны.
 
@@ -211,6 +213,25 @@ https://iplist.opencck.org/?format=json&data=cidr4&site=claude.ai&site=chatgpt.c
 ```
 
 Если таких списков несколько, добавьте каждый URL отдельной строкой в `generated/config/lists.txt`.
+
+Для URL со списками именно доменов используйте `generated/config/domain-list-urls.txt`. Формат содержимого источника простой: один домен на строку; пустые строки и строки, начинающиеся с `#`, игнорируются. Домены нормализуются, дубли удаляются, затем каждый домен резолвится в IPv4 и найденные адреса добавляются как `/32`.
+
+Пример файла по адресу `https://example.com/list.txt`:
+
+```text
+youtube.com
+googlevideo.com
+discord.com
+# comment
+```
+
+В `generated/config/domain-list-urls.txt` при этом добавляется только URL:
+
+```text
+https://example.com/list.txt
+```
+
+Если отдельный домен из такого списка временно не резолвится, он пропускается по best-effort логике. Сам скачанный список и DNS-результаты кешируются.
 
 ASN, чьи анонсированные IPv4-префиксы нужно принудительно добавить в маршруты, указываются в `generated/config/include-asns.txt`. Например, `AS32934` добавляет маршруты Meta для Facebook, Instagram, WhatsApp и Messenger.
 
@@ -268,7 +289,7 @@ flowchart TD
 
 ## Проверка и откат
 
-Перед применением нового `generated/routes.conf` контейнер использует отдельный подтвержденный snapshot `generated/routes.last-good.conf`. Этот файл обновляется только после успешного `birdc configure` и служит last-known-good состоянием для рестарта и rollback. У каждого сетевого источника есть отдельный кеш в `generated/cache`: URL из `generated/config/lists.txt`, префиксы ASN, country-списки, Google ranges и DNS-результаты доменов include/exclude. Если источник временно недоступен, генератор использует его последний кеш и продолжает обновление остальных источников.
+Перед применением нового `generated/routes.conf` контейнер использует отдельный подтвержденный snapshot `generated/routes.last-good.conf`. Этот файл обновляется только после успешного `birdc configure` и служит last-known-good состоянием для рестарта и rollback. У каждого сетевого источника есть отдельный кеш в `generated/cache`: URL из `generated/config/lists.txt`, доменные URL-списки из `generated/config/domain-list-urls.txt`, префиксы ASN, country-списки, Google ranges и DNS-результаты доменов include/exclude. Если источник временно недоступен, генератор использует его последний кеш и продолжает обновление остальных источников.
 
 Кеш используется только пока он моложе `CACHE_MAX_AGE`; по умолчанию это 604800 секунд, то есть 7 дней. Если у недоступного источника еще нет свежего кеша, обновление итогового файла не применяется и активным остается `routes.last-good.conf`. Если `birdc configure` не принимает обновленную конфигурацию, `deploy/reload-routes.sh` восстанавливает подтвержденный snapshot и повторно просит BIRD применить рабочий вариант.
 
@@ -370,7 +391,7 @@ make check-ip IP=1.2.3.4
 
 ## Эксплуатационный чеклист
 
-- Перед изменением `generated/config/lists.txt`, `generated/config/include-asns.txt`, `generated/config/include-countries.txt`, `generated/config/include-domains.txt` или `generated/config/exclude-domains.txt` запустите dry-run.
+- Перед изменением `generated/config/lists.txt`, `generated/config/domain-list-urls.txt`, `generated/config/include-asns.txt`, `generated/config/include-countries.txt`, `generated/config/include-domains.txt` или `generated/config/exclude-domains.txt` запустите dry-run.
 - После ручного reload проверьте `generated/status.json`: `success` должен быть `true`, а `routes.final` больше нуля.
 - На MikroTik принимайте только маршруты с ожидаемой BGP community и отклоняйте остальные.
 - Для exclude-доменов держите свежий кеш: если DNS временно недоступен и кеша нет, обновление намеренно не применяется.
