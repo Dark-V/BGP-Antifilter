@@ -84,6 +84,26 @@ class SourceRouteCountTests(unittest.TestCase):
 
 
 class DomainListTests(unittest.TestCase):
+    def test_parse_named_url_list_supports_optional_names_and_comments(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "domain-list-urls.txt"
+            path.write_text(
+                "# sources\n"
+                "YouTube | https://example.com/youtube.txt\n"
+                "https://example.com/plain.txt\n",
+                encoding="utf-8",
+            )
+
+            sources = update_routes.parse_named_url_list(path)
+
+        self.assertEqual(
+            sources,
+            [
+                {"name": "YouTube", "url": "https://example.com/youtube.txt"},
+                {"name": "", "url": "https://example.com/plain.txt"},
+            ],
+        )
+
     def test_parse_domain_list_normalizes_deduplicates_and_ignores_invalid_lines(self):
         domains, invalid = update_routes.parse_domain_list(
             "# comment\n"
@@ -111,7 +131,7 @@ class DomainListTests(unittest.TestCase):
             cache_dir = root / "cache"
 
             domain_source.write_text("alpha.example\nbeta.example\n", encoding="utf-8")
-            domain_lists.write_text(f"{domain_source.as_uri()}\n", encoding="utf-8")
+            domain_lists.write_text(f"Test domains | {domain_source.as_uri()}\n", encoding="utf-8")
             lists.write_text("", encoding="utf-8")
             include_asns.write_text("", encoding="utf-8")
             include_countries.write_text("", encoding="utf-8")
@@ -156,6 +176,8 @@ class DomainListTests(unittest.TestCase):
                 "192.0.2.10/32\n198.51.100.20/32\n198.51.100.21/32\n",
             )
             record = next(source for source in sources if source["kind"] == "domain-list-url")
+            self.assertEqual(record["name"], "Test domains")
+            self.assertEqual(record["url"], domain_source.as_uri())
             self.assertEqual(record["domains"], 2)
             self.assertEqual(record["resolved_domains"], 2)
             self.assertEqual(record["skipped_domains"], 0)
