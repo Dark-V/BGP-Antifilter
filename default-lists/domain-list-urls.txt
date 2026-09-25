@@ -1,3 +1,6 @@
-# URLs of plain-text domain lists, one domain per line.
-# Example:
+# URL-backed domain lists. One source per line.
+# Optional display name format:
+# YouTube | https://example.com/youtube.txt
+# Plain URLs are also supported:
 # https://example.com/domains.txt
+# Lines starting with # are comments.
