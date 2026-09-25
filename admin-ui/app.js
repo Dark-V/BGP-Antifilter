@@ -335,6 +335,9 @@ function applyLang() {
     }
   }
   if (!$("lists").classList.contains("hidden")) {
+    if (currentList === "include-domains") {
+      renderDomainListSourcesPanel();
+    }
     renderListTiles();
   }
   refreshListDirtyState();
