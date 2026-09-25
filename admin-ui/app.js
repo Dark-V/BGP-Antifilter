@@ -62,7 +62,7 @@ const dict = {
     updateRollbackOk: "Rollback completed", updateRollbackFailed: "Rollback failed",
     sourceOptions: "Source options", sourceOptionsHint: "These toggles affect which route sources are included in generation.",
     reloadStarted: "Route reload started in background",
-    domainListSources: "Domain list sources", domainListUrl: "Domain list URL", addSource: "Add source",
+    domainListSources: "Domain list sources", domainListName: "Name", domainListUrl: "Domain list URL", addSource: "Add source",
     domainListRawEditor: "Domain list source URLs", domainListEmpty: "No domain list sources yet",
     listHintDomainListUrls: "Add URLs of plain-text domain lists here. Each non-empty, non-comment line is treated as a domain, resolved to IPv4, and added as /32 routes.",
     listHintAsns: "Add ASNs here to include all announced IPv4 prefixes of those networks.",
@@ -135,7 +135,7 @@ const dict = {
     updateRollbackOk: "Откат выполнен", updateRollbackFailed: "Откат не удался",
     sourceOptions: "Параметры источников", sourceOptionsHint: "Эти переключатели влияют на то, какие источники попадут в генерацию маршрутов.",
     reloadStarted: "Перезагрузка маршрутов запущена в фоне",
-    domainListSources: "Источники списков доменов", domainListUrl: "URL списка доменов", addSource: "Добавить источник",
+    domainListSources: "Источники списков доменов", domainListName: "Имя", domainListUrl: "URL списка доменов", addSource: "Добавить источник",
     domainListRawEditor: "URL источников списков доменов", domainListEmpty: "Источников списков доменов пока нет",
     listHintDomainListUrls: "Добавляйте сюда URL текстовых списков доменов. Каждая непустая строка без # считается доменом, резолвится в IPv4 и добавляется как маршрут /32.",
     listHintAsns: "Добавляйте сюда ASN, чтобы включать все анонсируемые IPv4-префиксы этих сетей.",
@@ -2234,7 +2234,9 @@ function listSourceRecord(listName, value) {
     return sources.find(source => source.kind === "url" && (source.url === value || source.name === value));
   }
   if (listName === "domain-list-urls") {
-    return sources.find(source => source.kind === "domain-list-url" && (source.url === value || source.name === value));
+    const entry = parseDomainListSourceLine(value);
+    if (!entry) return null;
+    return sources.find(source => source.kind === "domain-list-url" && source.url === entry.url);
   }
   if (listName === "asns") {
     const asn = normalizeAsn(value);
@@ -2321,6 +2323,35 @@ function renderCountriesTab() {
   `;
 }
 
+function deriveDomainListSourceName(url) {
+  try {
+    const parsed = new URL(url);
+    const fileName = parsed.pathname.split("/").filter(Boolean).pop() || "";
+    return fileName ? `${parsed.hostname} · ${fileName}` : parsed.hostname;
+  } catch {
+    return String(url || "").trim();
+  }
+}
+
+function parseDomainListSourceLine(value) {
+  const raw = String(value || "").trim();
+  if (!raw || raw.startsWith("#")) return null;
+  const separator = raw.indexOf("|");
+  if (separator >= 0) {
+    const name = raw.slice(0, separator).trim();
+    const url = raw.slice(separator + 1).trim();
+    if (!url) return null;
+    return {name: name || deriveDomainListSourceName(url), url, explicitName: Boolean(name)};
+  }
+  return {name: deriveDomainListSourceName(raw), url: raw, explicitName: false};
+}
+
+function serializeDomainListSource(name, url) {
+  const cleanName = String(name || "").replaceAll("|", "-").trim();
+  const cleanUrl = String(url || "").trim();
+  return cleanName ? `${cleanName} | ${cleanUrl}` : cleanUrl;
+}
+
 function currentDomainListUrlContent() {
   const editor = $("domain-list-url-editor");
   return editor ? editor.value : domainListUrlDraftContent;
@@ -2343,12 +2374,17 @@ function renderDomainListSourcesPanel() {
   domainListUrlDraftContent = content;
   const lines = domainListUrlLines(content);
   const cards = lines.length ? lines.map(line => {
+    const entry = parseDomainListSourceLine(line.value);
+    if (!entry) return "";
     const record = listSourceRecord("domain-list-urls", line.value);
     const level = record ? eventLevel(record) : "warn";
     return `
       <article class="list-card ${level}">
-        <div class="list-card-head">
-          <strong>${escapeHtml(line.value)}</strong>
+        <div class="list-card-head domain-list-card-head">
+          <div class="domain-list-card-copy">
+            <strong>${escapeHtml(entry.name)}</strong>
+            <small title="${escapeHtml(entry.url)}">${escapeHtml(entry.url)}</small>
+          </div>
           <button type="button" class="icon-button list-remove-btn" data-domain-list-remove-index="${line.index}" title="${t("remove")}" aria-label="${t("remove")}">
             <i data-lucide="trash-2"></i>
           </button>
@@ -2367,6 +2403,7 @@ function renderDomainListSourcesPanel() {
         <span class="chip">URL → domains → DNS → /32</span>
       </div>
       <form id="domain-list-url-form" class="inline-form domain-list-url-form">
+        <input id="domain-list-name-input" type="text" autocomplete="off" placeholder="${escapeHtml(t("domainListName"))} (optional)">
         <input id="domain-list-url-input" type="url" autocomplete="off" placeholder="${escapeHtml(t("domainListUrl"))}: https://example.com/list.txt">
         <button type="submit"><i data-lucide="plus"></i><span>${escapeHtml(t("addSource"))}</span></button>
       </form>
@@ -2415,11 +2452,12 @@ async function saveDomainListUrls() {
   }
 }
 
-async function addDomainListUrl(value) {
-  const item = String(value || "").trim();
-  if (!item) return;
+async function addDomainListUrl(value, name = "") {
+  const url = String(value || "").trim();
+  if (!url) return;
+  const item = serializeDomainListSource(name, url);
   const lines = domainListUrlLines().map(line => line.value);
-  if (lines.includes(item)) {
+  if (lines.some(line => parseDomainListSourceLine(line)?.url === url)) {
     const status = $("domain-list-url-status");
     if (status) {
       status.textContent = t("noChanges");
@@ -2654,7 +2692,7 @@ $("list-tiles").addEventListener("click", event => {
 $("list-source-settings").addEventListener("submit", event => {
   if (event.target.id === "domain-list-url-form") {
     event.preventDefault();
-    addDomainListUrl($("domain-list-url-input")?.value || "");
+    addDomainListUrl($("domain-list-url-input")?.value || "", $("domain-list-name-input")?.value || "");
   }
 });
 $("list-source-settings").addEventListener("click", event => {
