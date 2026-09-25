@@ -1,5 +1,6 @@
 import contextlib
 import io
+import ipaddress
 import json
 import tempfile
 import unittest
@@ -83,10 +84,6 @@ class CheckIpTests(unittest.TestCase):
             self.assertEqual(data["routes"], ["192.0.2.0/24"])
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class DomainListSourceTests(unittest.TestCase):
     def test_source_matches_uses_resolved_cache_for_domain_list_url(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -104,3 +101,7 @@ class DomainListSourceTests(unittest.TestCase):
             matches = check_ip.source_matches(ipaddress.ip_address("192.0.2.55"), source)
 
         self.assertEqual(matches, [ipaddress.ip_network("192.0.2.55/32")])
+
+
+if __name__ == "__main__":
+    unittest.main()
