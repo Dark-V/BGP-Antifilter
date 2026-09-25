@@ -42,8 +42,9 @@ const dict = {
     mikrotikWaitingInitial: "BGP session will appear after BIRD startup", progress: "Progress",
     stageBootstrap: "Preparing update", stageCollectingSources: "Collecting sources", stageBuildingRoutes: "Building routes",
     stageWritingRoutes: "Writing routes.conf", stageWritingStatus: "Writing status and metrics", stageCompleted: "Completed"
-    ,currentSource: "Current source", sourceUrl: "URL", sourceAsn: "ASN", sourceGoogle: "Google ranges",
+    ,currentSource: "Current source", sourceUrl: "URL", sourceDomainListUrl: "Domain list URL", sourceAsn: "ASN", sourceGoogle: "Google ranges",
     sourceIncludeDomain: "Include domain", sourceExcludeDomain: "Exclude domain", attempt: "Attempt",
+    domains: "Domains", resolvedDomains: "Resolved domains", skippedDomains: "Skipped domains",
     startupSnapshot: "Startup snapshot", snapshotAge: "Snapshot age", snapshotActive: "Started with previous routes",
     startupRefreshOk: "Startup refresh completed", startupRefreshFailed: "Startup refresh failed",
     lastUpdateFinished: "Finished", unknownTime: "unknown time",
@@ -111,8 +112,9 @@ const dict = {
     mikrotikWaitingInitial: "BGP-сессия появится после запуска BIRD", progress: "Прогресс",
     stageBootstrap: "Подготовка обновления", stageCollectingSources: "Сбор источников", stageBuildingRoutes: "Сборка маршрутов",
     stageWritingRoutes: "Запись routes.conf", stageWritingStatus: "Запись status и metrics", stageCompleted: "Завершено"
-    ,currentSource: "Текущий источник", sourceUrl: "URL", sourceAsn: "ASN", sourceGoogle: "Google ranges",
+    ,currentSource: "Текущий источник", sourceUrl: "URL", sourceDomainListUrl: "URL списка доменов", sourceAsn: "ASN", sourceGoogle: "Google ranges",
     sourceIncludeDomain: "Include domain", sourceExcludeDomain: "Exclude domain", attempt: "Попытка",
+    domains: "Доменов", resolvedDomains: "Разрешено доменов", skippedDomains: "Пропущено доменов",
     startupSnapshot: "Стартовый snapshot", snapshotAge: "Возраст snapshot", snapshotActive: "Запуск со старыми маршрутами",
     startupRefreshOk: "Стартовый refresh завершен", startupRefreshFailed: "Стартовый refresh завершился ошибкой",
     lastUpdateFinished: "Завершено", unknownTime: "время неизвестно",
@@ -637,6 +639,7 @@ function runtimeStageLabel(stage) {
 function runtimeSourceKindLabel(kind) {
   const labels = {
     "url": t("sourceUrl"),
+    "domain-list-url": t("sourceDomainListUrl"),
     "asn": t("sourceAsn"),
     "google": t("sourceGoogle"),
     "include-domain": t("sourceIncludeDomain"),
@@ -2308,6 +2311,9 @@ function renderListSourceStats(record) {
   }
   const stats = [
     record.bytes != null ? `${t("downloaded")}: ${formatBytes(record.bytes)}` : "",
+    record.domains != null ? `${t("domains")}: ${record.domains}` : "",
+    record.resolved_domains != null ? `${t("resolvedDomains")}: ${record.resolved_domains}` : "",
+    record.skipped_domains ? `${t("skippedDomains")}: ${record.skipped_domains}` : "",
     record.routes != null ? `${t("resolvedRoutes")}: ${record.routes}` : "",
     sourceCacheFact(record),
   ].filter(Boolean);
