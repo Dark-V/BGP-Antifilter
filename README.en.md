@@ -151,7 +151,7 @@ After restarting the container, the interface is available on the configured hos
 Main sections:
 
 - `Dashboard` - current BIRD/BGP state, route count, last generation time, and `dry-run`, `check-sources`, `reload` actions.
-- `Lists` - editing `lists.txt`, `domain-list-urls.txt`, `include-asns.txt`, `include-countries.txt`, `include-domains.txt`, and `exclude-domains.txt` without `git pull` conflicts.
+- `Lists` - editing `lists.txt`, `include-asns.txt`, `include-countries.txt`, `include-domains.txt`, and `exclude-domains.txt`; domain-list URLs are managed in a dedicated block inside the `Include domains` tab.
 - `Tools` - metrics, active routes, container logs, and IP/domain diagnostics.
 - `Settings` - runtime generator settings plus BGP and healthcheck-related parameters.
 
@@ -213,7 +213,7 @@ https://iplist.opencck.org/?format=json&data=cidr4&site=claude.ai&site=chatgpt.c
 
 If you have multiple lists, add each URL as a separate line in `generated/config/lists.txt`.
 
-For URLs that contain domain names rather than IP prefixes, use `generated/config/domain-list-urls.txt`. The source format is intentionally simple: one domain per line; blank lines and lines starting with `#` are ignored. Domains are normalized and deduplicated, then resolved to IPv4 and added as `/32` routes.
+For URLs that contain domain names rather than IP prefixes, use the `Domain list sources` block inside the `Include domains` tab (stored internally in `generated/config/domain-list-urls.txt`). The source format is intentionally simple: one domain per line; blank lines and lines starting with `#` are ignored. Domains are normalized and deduplicated, then resolved to IPv4 and added as `/32` routes.
 
 Example content at `https://example.com/list.txt`:
 
