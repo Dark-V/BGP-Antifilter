@@ -1490,3 +1490,35 @@ details pre { margin-top: 12px; max-height: 360px; overflow: auto; }
     flex-direction: column;
   }
 }
+
+.domain-list-source-panel {
+  display: grid;
+  gap: 14px;
+}
+.domain-list-source-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+.domain-list-source-head h2 {
+  margin-bottom: 6px;
+}
+.domain-list-url-form {
+  margin-bottom: 0;
+}
+.domain-list-url-cards {
+  grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
+}
+.domain-list-url-raw {
+  margin-top: 2px;
+}
+.domain-list-url-raw textarea {
+  min-height: 160px;
+}
+@media (max-width: 720px) {
+  .domain-list-url-cards {
+    grid-template-columns: 1fr;
+  }
+}
