@@ -61,6 +61,7 @@ const dict = {
     updateRollbackOk: "Rollback completed", updateRollbackFailed: "Rollback failed",
     sourceOptions: "Source options", sourceOptionsHint: "These toggles affect which route sources are included in generation.",
     reloadStarted: "Route reload started in background",
+    listHintDomainListUrls: "Add URLs of plain-text domain lists here. Each non-empty, non-comment line is treated as a domain, resolved to IPv4, and added as /32 routes.",
     listHintAsns: "Add ASNs here to include all announced IPv4 prefixes of those networks.",
     listHintCountries: "Add 2-letter country codes here to load IPv4 prefixes assigned to those countries from RIPE Stat RIR data.",
     listHintGoogleRanges: "Uses Google `goog.json`, subtracts Google Cloud prefixes from `cloud.json`, and adds the remaining IPv4 prefixes. In practice this is mainly the YouTube source.",
@@ -130,6 +131,7 @@ const dict = {
     updateRollbackOk: "Откат выполнен", updateRollbackFailed: "Откат не удался",
     sourceOptions: "Параметры источников", sourceOptionsHint: "Эти переключатели влияют на то, какие источники попадут в генерацию маршрутов.",
     reloadStarted: "Перезагрузка маршрутов запущена в фоне",
+    listHintDomainListUrls: "Добавляйте сюда URL текстовых списков доменов. Каждая непустая строка без # считается доменом, резолвится в IPv4 и добавляется как маршрут /32.",
     listHintAsns: "Добавляйте сюда ASN, чтобы включать все анонсируемые IPv4-префиксы этих сетей.",
     listHintCountries: "Добавляйте сюда двухбуквенные коды стран, чтобы загружать IPv4-префиксы этих стран из RIR-данных через RIPE Stat.",
     listHintGoogleRanges: "Берутся Google `goog.json`, из них вычитаются Google Cloud префиксы из `cloud.json`, а оставшиеся IPv4-префиксы добавляются в маршруты. На практике это в основном источник для YouTube.",
@@ -186,6 +188,7 @@ const countryOptions = [
 ];
 const listLabels = {
   "urls": "URLs",
+  "domain-list-urls": "Domain list URLs",
   "asns": "ASNs",
   "countries": "Countries",
   "google-ranges": "Google ranges",
@@ -194,6 +197,7 @@ const listLabels = {
 };
 const listIcons = {
   "urls": "link-2",
+  "domain-list-urls": "list-tree",
   "asns": "hash",
   "countries": "flag",
   "google-ranges": "globe",
@@ -2072,7 +2076,7 @@ async function loadList(name) {
   document.querySelectorAll("[data-list]").forEach(button => button.classList.toggle("active", button.dataset.list === name));
   $("list-title").textContent = listLabels[name];
   const special = isSpecialList(name);
-  const showHintPanel = special || name === "asns";
+  const showHintPanel = special || name === "asns" || name === "domain-list-urls";
   $("add-list-form").classList.toggle("hidden", special);
   $("list-source-settings").classList.toggle("hidden", !showHintPanel);
   $("list-tiles").classList.toggle("hidden", false);
@@ -2161,8 +2165,10 @@ function isSpecialList(name) {
 }
 
 function renderListHint(name) {
-  const key = name === "asns"
-    ? "listHintAsns"
+  const key = name === "domain-list-urls"
+    ? "listHintDomainListUrls"
+    : name === "asns"
+      ? "listHintAsns"
     : name === "countries"
       ? "listHintCountries"
       : name === "google-ranges"
@@ -2207,6 +2213,9 @@ function listSourceRecord(listName, value) {
   }
   if (listName === "urls") {
     return sources.find(source => source.kind === "url" && (source.url === value || source.name === value));
+  }
+  if (listName === "domain-list-urls") {
+    return sources.find(source => source.kind === "domain-list-url" && (source.url === value || source.name === value));
   }
   if (listName === "asns") {
     const asn = normalizeAsn(value);
