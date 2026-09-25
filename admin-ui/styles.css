@@ -1522,3 +1522,30 @@ details pre { margin-top: 12px; max-height: 360px; overflow: auto; }
     grid-template-columns: 1fr;
   }
 }
+
+.domain-list-url-form {
+  display: grid;
+  grid-template-columns: minmax(160px, .7fr) minmax(300px, 1.6fr) auto;
+  align-items: stretch;
+}
+.domain-list-card-head {
+  align-items: flex-start;
+}
+.domain-list-card-copy {
+  min-width: 0;
+  display: grid;
+  gap: 5px;
+}
+.domain-list-card-copy strong {
+  font-size: 15px;
+}
+.domain-list-card-copy small {
+  color: var(--muted);
+  overflow-wrap: anywhere;
+  line-height: 1.35;
+}
+@media (max-width: 820px) {
+  .domain-list-url-form {
+    grid-template-columns: 1fr;
+  }
+}
