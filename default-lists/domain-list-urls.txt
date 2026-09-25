@@ -1,0 +1,3 @@
+# URLs of plain-text domain lists, one domain per line.
+# Example:
+# https://example.com/domains.txt
