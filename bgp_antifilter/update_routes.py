@@ -877,6 +877,9 @@ def collect_sources(cache_dir, cache_max_age, include_google):
             if skipped_domains:
                 record["skipped_domain_samples"] = skipped_domains
             if domains:
+                resolved_cache_file = cache_path(cache_dir, "domain-list-routes", url)
+                resolved_cache_file.write_text("".join(resolved_routes), encoding="utf-8")
+                record["resolved_cache_file"] = str(resolved_cache_file)
                 include_text.extend(resolved_routes)
             else:
                 ok = False
