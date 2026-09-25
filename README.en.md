@@ -36,7 +36,7 @@ If you want the shortest path to a working setup:
 
 1. Copy the example environment: `cp .env.example .env`.
 2. Review `MY_AS`, `MT_AS`, `MT_IP`, `BIRD_IP`, `ROUTER_ID`, and `BGP_COMMUNITY`.
-3. Add at least one URL source to `generated/config/lists.txt`, or let the first start populate defaults.
+3. Add at least one source to `generated/config/lists.txt` or `generated/config/domain-list-urls.txt`, or let the first start populate defaults.
 4. If needed, enable the admin UI: `ADMIN_ENABLED=1`, `ADMIN_PORT=8080`, `ADMIN_PASSWORD=change-me`.
 5. Start the stack: `docker compose up -d --build`.
 6. Check state with `docker compose ps` and `docker compose logs -f bird admin`.
