@@ -135,6 +135,29 @@ def read_list(path):
     return result
 
 
+def parse_named_url_list(path):
+    if not path.exists():
+        return []
+
+    result = []
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if "|" in line:
+            name, url = line.split("|", 1)
+            name = name.strip()
+            url = url.strip()
+        else:
+            name = ""
+            url = line
+        if not url:
+            continue
+        result.append({"name": name, "url": url})
+
+    return result
+
+
 def normalize_domain_name(value):
     domain = str(value or "").strip().rstrip(".").lower()
     if not domain or any(char.isspace() for char in domain):
@@ -700,7 +723,7 @@ def collect_sources(cache_dir, cache_max_age, include_google):
     exclude_text = []
 
     url_sources = read_list(list_files["urls"])
-    domain_list_sources = read_list(list_files["domain-list-urls"])
+    domain_list_sources = parse_named_url_list(list_files["domain-list-urls"])
     asn_sources = read_list(list_files["asns"])
     country_sources = read_list(list_files["countries"])
     exclude_domains = read_list(list_files["exclude-domains"])
@@ -806,19 +829,21 @@ def collect_sources(cache_dir, cache_max_age, include_google):
             current_index=processed_items,
         )
 
-    for index, url in enumerate(domain_list_sources, 1):
+    for index, source in enumerate(domain_list_sources, 1):
+        url = source["url"]
+        source_name = source["name"] or url
         current_index = processed_items + 1
         update_collection_progress(
             f"Fetching domain list URL {current_index}/{total_items}",
             current_kind="domain-list-url",
-            current_name=url,
+            current_name=source_name,
             current_index=current_index,
             current_step=0.15,
         )
-        progress("fetching domain list url", index=index, total=len(domain_list_sources), url=url)
+        progress("fetching domain list url", index=index, total=len(domain_list_sources), name=source_name, url=url)
         text, record, ok = fetch_text_source(
             "domain-list-url",
-            url,
+            source_name,
             url,
             cache_path(cache_dir, "domain-list-url", url),
             now,
@@ -827,7 +852,7 @@ def collect_sources(cache_dir, cache_max_age, include_google):
             progress_callback=lambda attempt, attempts, current_index=current_index, url=url: update_collection_progress(
                 f"Fetching domain list URL {current_index}/{total_items}",
                 current_kind="domain-list-url",
-                current_name=url,
+                current_name=source_name,
                 current_index=current_index,
                 current_attempt=attempt,
                 current_attempt_total=attempts,
@@ -869,7 +894,7 @@ def collect_sources(cache_dir, cache_max_age, include_google):
                 update_collection_progress(
                     f"Resolving domains from list {current_index}/{total_items}: {domain_index}/{max(1, len(domains))}",
                     current_kind="domain-list-url",
-                    current_name=url,
+                    current_name=source_name,
                     current_index=current_index,
                     current_step=0.45 + 0.5 * (domain_index / max(1, len(domains))),
                 )
@@ -901,7 +926,7 @@ def collect_sources(cache_dir, cache_max_age, include_google):
         update_collection_progress(
             f"Processed domain list URL {processed_items}/{total_items}",
             current_kind="domain-list-url",
-            current_name=url,
+            current_name=source_name,
             current_index=processed_items,
         )
 
