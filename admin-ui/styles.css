@@ -1079,7 +1079,7 @@ details pre { margin-top: 12px; max-height: 360px; overflow: auto; }
 }
 .list-card-head {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 32px;
+  grid-template-columns: minmax(0, 1fr) auto;
   gap: 8px;
   align-items: start;
 }
@@ -1566,6 +1566,39 @@ details pre { margin-top: 12px; max-height: 360px; overflow: auto; }
   grid-template-columns: minmax(160px, .7fr) minmax(300px, 1.6fr) auto auto;
 }
 @media (max-width: 820px) {
+  .list-add-form.named-url-form,
+  .domain-list-url-form {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Keep URL source cards readable instead of squeezing four cards into one row. */
+.url-source-tiles,
+.domain-list-url-cards {
+  grid-template-columns: repeat(auto-fit, minmax(560px, 1fr));
+}
+
+/* Name + URL + action buttons must stay inside the panel at desktop widths. */
+.list-add-form.named-url-form,
+.domain-list-url-form {
+  grid-template-columns: minmax(180px, 280px) minmax(0, 1fr) max-content max-content;
+}
+
+.list-add-form.named-url-form input,
+.domain-list-url-form input {
+  min-width: 0;
+}
+
+@media (max-width: 1240px) {
+  .url-source-tiles,
+  .domain-list-url-cards {
+    grid-template-columns: repeat(auto-fit, minmax(440px, 1fr));
+  }
+}
+
+@media (max-width: 820px) {
+  .url-source-tiles,
+  .domain-list-url-cards,
   .list-add-form.named-url-form,
   .domain-list-url-form {
     grid-template-columns: 1fr;
