@@ -1604,3 +1604,18 @@ details pre { margin-top: 12px; max-height: 360px; overflow: auto; }
     grid-template-columns: 1fr;
   }
 }
+
+/* Card actions use the same compact dimensions for edit and delete. */
+.list-card-actions {
+  gap: 6px;
+}
+.list-card-actions .icon-button {
+  width: 32px;
+  height: 32px;
+  min-width: 32px;
+  padding: 0;
+}
+.list-card-actions .icon-button .lucide {
+  width: 18px;
+  height: 18px;
+}

@@ -2545,7 +2545,10 @@ async function removeDomainListUrl(index) {
 
 function renderListSourceStats(record) {
   if (!record) {
-    return `<span class="chip warn">${t("notSeen")}</span>`;
+    return `
+      <div class="list-card-stats">
+        <span class="chip warn">${t("notSeen")}</span>
+      </div>`;
   }
   const stats = [
     record.bytes != null ? `${t("downloaded")}: ${formatBytes(record.bytes)}` : "",
