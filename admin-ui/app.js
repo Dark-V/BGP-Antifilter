@@ -2367,8 +2367,7 @@ function serializeNamedUrlSource(name, url) {
 }
 
 function currentDomainListUrlContent() {
-  const editor = $("domain-list-url-editor");
-  return editor ? editor.value : domainListUrlDraftContent;
+  return domainListUrlDraftContent;
 }
 
 function domainListUrlLines(content = currentDomainListUrlContent()) {
@@ -2569,17 +2568,20 @@ function renderListTiles() {
     refreshDomainListSourceCards();
   }
   if (currentList === "google-ranges") {
+    $("list-tiles").classList.remove("url-source-tiles");
     $("list-tiles").innerHTML = "";
     renderGoogleRangesTab();
     renderIcons();
     return;
   }
   if (currentList === "countries") {
+    $("list-tiles").classList.remove("url-source-tiles");
     $("list-tiles").innerHTML = "";
     renderCountriesTab();
     renderIcons();
     return;
   }
+  $("list-tiles").classList.toggle("url-source-tiles", currentList === "urls");
   const lines = parseListLines($("list-editor").value);
   const active = lines.filter(line => line.active);
   const comments = lines.filter(line => line.comment);
