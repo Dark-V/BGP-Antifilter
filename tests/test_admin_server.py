@@ -185,6 +185,20 @@ class AdminServerHelperTests(unittest.TestCase):
     def test_validate_setting_allows_empty_custom_dns_list(self):
         self.assertEqual(admin_server.validate_setting("DNS_RESOLVERS", ""), "")
 
+    def test_validate_dynamic_dns_settings(self):
+        self.assertEqual(admin_server.validate_setting("DYNAMIC_DNS_PROVIDER", "adguard"), "adguard")
+        self.assertEqual(admin_server.validate_setting("DYNAMIC_DNS_PROVIDER", ""), "")
+        self.assertEqual(
+            admin_server.validate_setting("DYNAMIC_DNS_URL", "http://192.0.2.53:3000/"),
+            "http://192.0.2.53:3000",
+        )
+        with self.assertRaises(ValueError):
+            admin_server.validate_setting("DYNAMIC_DNS_PROVIDER", "unknown")
+        with self.assertRaises(ValueError):
+            admin_server.validate_setting("DYNAMIC_DNS_URL", "ftp://192.0.2.53")
+        with self.assertRaises(ValueError):
+            admin_server.validate_setting("DYNAMIC_DNS_URL", "http://user:pass@192.0.2.53:3000")
+
     def test_validate_setting_rejects_invalid_ipv4(self):
         with self.assertRaises(ValueError):
             admin_server.validate_setting("MT_IP", "999.1.1.1")
