@@ -24,7 +24,7 @@ const dict = {
     comments: "Comments", emptyList: "No entries yet", itemPlaceholder: "New entry",
     logs: "Logs", containerLogs: "Container logs", checkedAddresses: "Checked addresses",
     downloadRoutes: "Download routes.conf", restartRequired: "restart", overridden: "changed",
-    updateSettings: "Update", securitySettings: "Generation safety", birdSettings: "BIRD / BGP",
+    updateSettings: "Update", dynamicDnsSettings: "Dynamic DNS", securitySettings: "Generation safety", birdSettings: "BIRD / BGP",
     applySettings: "Apply now", applying: "Applying...", unsavedChanges: "Unsaved changes",
     noChanges: "No changes", backupSaved: "Backup", discardListChanges: "Discard unsaved list changes?",
     discardSettingsChanges: "Discard unsaved settings changes?", leavePageWarning: "You have unsaved changes.",
@@ -96,7 +96,7 @@ const dict = {
     comments: "Комментарии", emptyList: "Записей пока нет", itemPlaceholder: "Новая запись",
     logs: "Логи", containerLogs: "Логи контейнера", checkedAddresses: "Проверенные адреса",
     downloadRoutes: "Скачать routes.conf", restartRequired: "перезапуск", overridden: "изменено",
-    updateSettings: "Обновление", securitySettings: "Безопасность генерации", birdSettings: "BIRD / BGP",
+    updateSettings: "Обновление", dynamicDnsSettings: "Динамический DNS", securitySettings: "Безопасность генерации", birdSettings: "BIRD / BGP",
     applySettings: "Применить сейчас", applying: "Применяем...", unsavedChanges: "Есть несохраненные изменения",
     noChanges: "Изменений нет", backupSaved: "Бэкап", discardListChanges: "Отбросить несохраненные изменения списка?",
     discardSettingsChanges: "Отбросить несохраненные изменения настроек?", leavePageWarning: "Есть несохраненные изменения.",
@@ -204,6 +204,7 @@ const listLabels = {
   "countries": "Countries",
   "google-ranges": "Google ranges",
   "include-domains": "Include domains",
+  "dynamic-domains": "Dynamic domains",
   "exclude-domains": "Exclude domains"
 };
 const listIcons = {
@@ -212,6 +213,7 @@ const listIcons = {
   "countries": "flag",
   "google-ranges": "globe",
   "include-domains": "circle-plus",
+  "dynamic-domains": "radar",
   "exclude-domains": "circle-minus"
 };
 const settingLabels = {
@@ -222,6 +224,12 @@ const settingLabels = {
   FETCH_RETRY_DELAY: {ru: "Пауза между попытками", en: "Retry delay"},
   DNS_RESOLVERS: {ru: "Пользовательские DNS", en: "Custom DNS resolvers"},
   DNS_RESOLVE_TIMEOUT: {ru: "Таймаут DNS-запроса", en: "DNS query timeout"},
+  DYNAMIC_DNS_PROVIDER: {ru: "Провайдер Dynamic DNS", en: "Dynamic DNS provider"},
+  DYNAMIC_DNS_URL: {ru: "URL DNS API", en: "DNS API URL"},
+  DYNAMIC_DNS_POLL_INTERVAL: {ru: "Интервал опроса", en: "Poll interval"},
+  DYNAMIC_DNS_MAX_AGE: {ru: "Время удержания IP", en: "IP retention"},
+  DYNAMIC_DNS_QUERY_LIMIT: {ru: "Лимит записей Query Log", en: "Query Log record limit"},
+  DYNAMIC_DNS_TIMEOUT: {ru: "Таймаут API", en: "API timeout"},
   INCLUDE_GOOGLE_RANGES: {ru: "Добавлять Google ranges", en: "Include Google ranges"},
   MIN_PREFIX_LENGTH: {ru: "Минимальная длина префикса", en: "Minimum prefix length"},
   ALLOW_BROAD_ROUTES: {ru: "Разрешить широкие маршруты", en: "Allow broad routes"},
@@ -236,6 +244,7 @@ const settingLabels = {
 };
 const settingsSectionLabels = {
   update: "updateSettings",
+  dynamic_dns: "dynamicDnsSettings",
   security: "securitySettings",
   bird: "birdSettings",
 };
@@ -1963,7 +1972,14 @@ function renderSettingInput(item) {
   if (item.type === "dns_list") {
     return `<textarea data-setting-key="${key}" rows="4" spellcheck="false" placeholder="1.1.1.1&#10;8.8.8.8">${escapeHtml(String(item.value || "").replaceAll(",", "\n"))}</textarea>`;
   }
-  const inputType = item.type === "int" || item.type === "number" || item.type === "asn" ? "number" : "text";
+  if (item.type === "choice") {
+    return `<select data-setting-key="${key}">${(item.options || []).map(option => {
+      const value = String(option || "");
+      const label = value || (lang === "ru" ? "выключено" : "disabled");
+      return `<option value="${escapeHtml(value)}" ${String(item.value || "") === value ? "selected" : ""}>${escapeHtml(label)}</option>`;
+    }).join("")}</select>`;
+  }
+  const inputType = item.type === "int" || item.type === "number" || item.type === "asn" ? "number" : (item.type === "url" ? "url" : "text");
   const attrs = [
     `type="${inputType}"`,
     `data-setting-key="${key}"`,
