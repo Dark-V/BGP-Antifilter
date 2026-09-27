@@ -56,6 +56,7 @@ BGP Antifilter - контейнеризированная конфигураци
 - `generated/config/include-asns.txt` - рабочий список ASN пользователя.
 - `generated/config/include-countries.txt` - рабочий список стран пользователя в формате ISO 3166-1 alpha-2 (`US`, `DE`, `NL`).
 - `generated/config/include-domains.txt` - рабочий список include-доменов пользователя.
+- `generated/config/dynamic-domains.txt` - wildcard/точные домены, IPv4 которых обучаются из DNS Query Log.
 - `generated/config/exclude-domains.txt` - рабочий список exclude-доменов пользователя.
 - `generated/` - генерируемый кеш маршрутов, не хранится в репозитории.
 
@@ -95,6 +96,14 @@ ROUTER_ID=192.168.55.5
 BGP_COMMUNITY=65432,500
 UPDATE_INTERVAL=1800
 CACHE_MAX_AGE=604800
+DYNAMIC_DNS_PROVIDER=
+DYNAMIC_DNS_URL=
+DYNAMIC_DNS_USERNAME=
+DYNAMIC_DNS_PASSWORD=
+DYNAMIC_DNS_POLL_INTERVAL=5
+DYNAMIC_DNS_MAX_AGE=21600
+DYNAMIC_DNS_QUERY_LIMIT=200
+DYNAMIC_DNS_TIMEOUT=5
 INCLUDE_GOOGLE_RANGES=1
 REQUIRE_ALL_URL_SOURCES=0
 MIN_PREFIX_LENGTH=8
@@ -119,6 +128,13 @@ ADMIN_PASSWORD=
 - `BGP_COMMUNITY` - community, которая добавляется к экспортируемым маршрутам.
 - `UPDATE_INTERVAL` - интервал обновления списков в секундах.
 - `CACHE_MAX_AGE` - максимальный возраст кеша источника в секундах, по умолчанию 7 дней.
+- `DYNAMIC_DNS_PROVIDER` - провайдер пассивного DNS-обучения; сейчас поддерживается `adguard`, пустое значение отключает функцию.
+- `DYNAMIC_DNS_URL` - базовый URL AdGuard Home, например `http://192.168.88.16:3000`.
+- `DYNAMIC_DNS_USERNAME` / `DYNAMIC_DNS_PASSWORD` - учетные данные AdGuard Home Basic Auth; задаются через `.env`, в веб-настройках пароль не отображается.
+- `DYNAMIC_DNS_POLL_INTERVAL` - интервал опроса Query Log, по умолчанию 5 секунд.
+- `DYNAMIC_DNS_MAX_AGE` - сколько секунд удерживать обнаруженный IPv4 после последнего совпавшего DNS-запроса; по умолчанию 6 часов.
+- `DYNAMIC_DNS_QUERY_LIMIT` - максимальное число записей Query Log на поисковый запрос.
+- `DYNAMIC_DNS_TIMEOUT` - таймаут REST API в секундах.
 - `INCLUDE_GOOGLE_RANGES` - `1` добавляет default Google service ranges из `goog.json` за вычетом Google Cloud из `cloud.json`; `0` отключает этот источник.
 - `REQUIRE_ALL_URL_SOURCES` - `1` делает каждый URL из `generated/config/lists.txt` обязательным; `0` по умолчанию разрешает пропустить недоступный URL-источник, если итоговая таблица все равно собирается из остальных данных.
 - `MIN_PREFIX_LENGTH` - минимальная длина IPv4-префикса, разрешенная из внешних источников, по умолчанию `8`.
@@ -227,6 +243,8 @@ NL
 Для YouTube включен отдельный источник Google ranges: при `INCLUDE_GOOGLE_RANGES=1` контейнер берет `https://www.gstatic.com/ipranges/goog.json`, вычитает `https://www.gstatic.com/ipranges/cloud.json` и добавляет оставшиеся IPv4-префиксы. Домены YouTube в `generated/config/include-domains.txt` остаются как дополнительный точечный источник.
 
 Домены, которые нужно принудительно добавить в маршруты, указываются в `generated/config/include-domains.txt`. Эти домены обрабатываются как best-effort: если домен временно не резолвится и кеша для него нет, он помечается как `skipped`, но обновление маршрутов продолжается.
+
+Для динамических CDN-доменов используйте `generated/config/dynamic-domains.txt`. Поддерживаются точные имена и шаблоны вида `*.ttvnw.net`. При `DYNAMIC_DNS_PROVIDER=adguard` отдельный worker опрашивает `/control/querylog`, локально проверяет wildcard, берет только реальные IPv4 из `answer` типа `A`, сохраняет их в `generated/dynamic-routes.conf` и вызывает `birdc configure` только когда набор маршрутов изменился. Это не требует добавлять целиком CloudFront/Fastly ASN или диапазоны.
 
 Домены, которые нужно исключить из маршрутов, указываются в `generated/config/exclude-domains.txt`. Эти домены считаются строгими: если исключение не удалось зарезолвить и свежего кеша нет, новый `routes.conf` не применяется. Если исключенный IP попадает внутрь более крупной подсети, генератор разобьет подсеть на меньшие маршруты без этого IP.
 
