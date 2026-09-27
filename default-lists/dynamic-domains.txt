@@ -1,0 +1,8 @@
+# Dynamic DNS domain patterns.
+# Exact domains are supported as-is. A leading "*." matches the base domain
+# and all of its subdomains. Matching A answers are learned from the selected
+# dynamic DNS provider and installed as temporary /32 BIRD routes.
+#
+# Example:
+# *.ttvnw.net
+# *.live-video.net
