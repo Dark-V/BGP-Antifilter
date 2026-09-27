@@ -6,10 +6,19 @@ DOMAIN_LIST_URLS_FILE="${DOMAIN_LIST_URLS_FILE:-/etc/bird/domain-list-urls.txt}"
 INCLUDE_ASNS_FILE="${INCLUDE_ASNS_FILE:-/etc/bird/include-asns.txt}"
 INCLUDE_COUNTRIES_FILE="${INCLUDE_COUNTRIES_FILE:-/etc/bird/include-countries.txt}"
 INCLUDE_DOMAINS_FILE="${INCLUDE_DOMAINS_FILE:-/etc/bird/include-domains.txt}"
+DYNAMIC_DOMAINS_FILE="${DYNAMIC_DOMAINS_FILE:-/etc/bird/dynamic-domains.txt}"
 EXCLUDE_DOMAINS_FILE="${EXCLUDE_DOMAINS_FILE:-/etc/bird/exclude-domains.txt}"
 INCLUDE_GOOGLE_RANGES="${INCLUDE_GOOGLE_RANGES:-1}"
 UPDATE_INTERVAL="${UPDATE_INTERVAL:-1800}"
 CACHE_MAX_AGE="${CACHE_MAX_AGE:-604800}"
+DYNAMIC_DNS_PROVIDER="${DYNAMIC_DNS_PROVIDER:-}"
+DYNAMIC_DNS_URL="${DYNAMIC_DNS_URL:-}"
+DYNAMIC_DNS_USERNAME="${DYNAMIC_DNS_USERNAME:-}"
+DYNAMIC_DNS_PASSWORD="${DYNAMIC_DNS_PASSWORD:-}"
+DYNAMIC_DNS_POLL_INTERVAL="${DYNAMIC_DNS_POLL_INTERVAL:-5}"
+DYNAMIC_DNS_MAX_AGE="${DYNAMIC_DNS_MAX_AGE:-21600}"
+DYNAMIC_DNS_QUERY_LIMIT="${DYNAMIC_DNS_QUERY_LIMIT:-200}"
+DYNAMIC_DNS_TIMEOUT="${DYNAMIC_DNS_TIMEOUT:-5}"
 MY_AS="${MY_AS:-64500}"
 MT_AS="${MT_AS:-65455}"
 MT_IP="${MT_IP:-192.168.55.1}"
@@ -19,6 +28,8 @@ BGP_COMMUNITY="${BGP_COMMUNITY:-65432,500}"
 BIRD_TEMPLATE="${BIRD_TEMPLATE:-/etc/bird/bird.conf.template}"
 BIRD_CONFIG="${BIRD_CONFIG:-/etc/bird/bird.conf}"
 ROUTES="/etc/bird/generated/routes.conf"
+DYNAMIC_ROUTES="${DYNAMIC_ROUTES_FILE:-/etc/bird/generated/dynamic-routes.conf}"
+DYNAMIC_DNS_STATE_FILE="${DYNAMIC_DNS_STATE_FILE:-/etc/bird/generated/dynamic-dns-cache.json}"
 LAST_GOOD_ROUTES="${LAST_GOOD_ROUTES_FILE:-/etc/bird/generated/routes.last-good.conf}"
 CACHE_DIR="${CACHE_DIR:-/etc/bird/generated/cache}"
 STATUS_FILE="${STATUS_FILE:-/etc/bird/generated/status.json}"
@@ -288,16 +299,27 @@ ensure_runtime_config_file "$DOMAIN_LIST_URLS_FILE" "domain-list-urls.txt"
 ensure_runtime_config_file "$INCLUDE_ASNS_FILE" "include-asns.txt"
 ensure_runtime_config_file "$INCLUDE_COUNTRIES_FILE" "include-countries.txt"
 ensure_runtime_config_file "$INCLUDE_DOMAINS_FILE" "include-domains.txt"
+ensure_runtime_config_file "$DYNAMIC_DOMAINS_FILE" "dynamic-domains.txt"
 ensure_runtime_config_file "$EXCLUDE_DOMAINS_FILE" "exclude-domains.txt"
 touch "$ROUTES"
+touch "$DYNAMIC_ROUTES"
 touch "$LAST_GOOD_ROUTES"
 touch "$CONTAINER_LOG_FILE"
+
+case "$(printf '%s' "$DYNAMIC_DNS_PROVIDER" | tr '[:upper:]' '[:lower:]')" in
+  ""|off|none|disabled)
+    : >"$DYNAMIC_ROUTES"
+    rm -f "$DYNAMIC_DNS_STATE_FILE"
+    ;;
+esac
 exec >>"$CONTAINER_LOG_FILE" 2>&1
 echo "container log started at $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
 
-export LISTS_FILE DOMAIN_LIST_URLS_FILE INCLUDE_ASNS_FILE INCLUDE_COUNTRIES_FILE INCLUDE_DOMAINS_FILE EXCLUDE_DOMAINS_FILE
+export LISTS_FILE DOMAIN_LIST_URLS_FILE INCLUDE_ASNS_FILE INCLUDE_COUNTRIES_FILE INCLUDE_DOMAINS_FILE DYNAMIC_DOMAINS_FILE EXCLUDE_DOMAINS_FILE
 export INCLUDE_GOOGLE_RANGES CACHE_DIR CACHE_MAX_AGE STATUS_FILE METRICS_FILE RUNTIME_FILE SETTINGS_ENV_FILE
+export DYNAMIC_DNS_PROVIDER DYNAMIC_DNS_URL DYNAMIC_DNS_USERNAME DYNAMIC_DNS_PASSWORD DYNAMIC_DNS_POLL_INTERVAL DYNAMIC_DNS_MAX_AGE DYNAMIC_DNS_QUERY_LIMIT DYNAMIC_DNS_TIMEOUT DYNAMIC_DNS_STATE_FILE
 export ROUTES_FILE="$ROUTES"
+export DYNAMIC_ROUTES_FILE="$DYNAMIC_ROUTES"
 export LAST_GOOD_ROUTES_FILE="$LAST_GOOD_ROUTES"
 export ADMIN_ENABLED ADMIN_PORT ADMIN_PASSWORD
 
@@ -375,6 +397,16 @@ bird -f -c "$BIRD_CONFIG" &
 BIRD_PID="$!"
 
 sleep 2
+
+case "$(printf '%s' "$DYNAMIC_DNS_PROVIDER" | tr '[:upper:]' '[:lower:]')" in
+  ""|off|none|disabled)
+    echo "dynamic DNS routing disabled"
+    ;;
+  *)
+    echo "starting dynamic DNS worker provider=$DYNAMIC_DNS_PROVIDER"
+    /dynamic-dns.py &
+    ;;
+esac
 
 if [ "$startup_refresh_in_background" = "1" ]; then
   update_routes apply startup &

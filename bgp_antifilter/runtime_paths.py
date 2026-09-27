@@ -8,6 +8,7 @@ LIST_FILE_SPECS = {
     "asns": ("INCLUDE_ASNS_FILE", "/etc/bird/include-asns.txt"),
     "countries": ("INCLUDE_COUNTRIES_FILE", "/etc/bird/include-countries.txt"),
     "include-domains": ("INCLUDE_DOMAINS_FILE", "/etc/bird/include-domains.txt"),
+    "dynamic-domains": ("DYNAMIC_DOMAINS_FILE", "/etc/bird/dynamic-domains.txt"),
     "exclude-domains": ("EXCLUDE_DOMAINS_FILE", "/etc/bird/exclude-domains.txt"),
 }
 

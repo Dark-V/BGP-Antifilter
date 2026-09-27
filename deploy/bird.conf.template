@@ -15,6 +15,11 @@ protocol static static_antifilter {
     include "/etc/bird/generated/routes.conf";
 }
 
+protocol static static_antifilter_dynamic {
+    ipv4;
+    include "/etc/bird/generated/dynamic-routes.conf";
+}
+
 filter export_to_mikrotik {
     bgp_community.add((${BGP_COMMUNITY}));
     bgp_next_hop = BIRD_IP;

@@ -44,7 +44,7 @@ body::before {
     linear-gradient(42deg, transparent 0 54%, rgba(85,217,135,.15) 54.1% 54.25%, transparent 54.35% 100%);
 }
 
-button, input, textarea {
+button, input, textarea, select {
   font: inherit;
 }
 
@@ -538,7 +538,7 @@ pre {
   color: var(--text);
   background: #071017;
 }
-.settings-form input {
+.settings-form input, .settings-form select {
   width: 100%;
   border: 1px solid var(--line);
   border-radius: 8px;
