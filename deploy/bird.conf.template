@@ -13,6 +13,7 @@ protocol device {
 protocol static static_antifilter {
     ipv4;
     include "/etc/bird/generated/routes.conf";
+    include "/etc/bird/generated/dynamic-routes.conf";
 }
 
 filter export_to_mikrotik {
