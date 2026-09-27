@@ -343,10 +343,17 @@ def run_once(settings=None, *, now=None):
         return {"enabled": False, "routes": 0, "changed": False}
 
     rules = read_rules(settings["rules_file"])
-    if not rules:
-        return {"enabled": True, "routes": 0, "changed": False}
-
     current_time = int(time.time()) if now is None else int(now)
+    if not rules:
+        changed = apply_routes(
+            settings["routes_file"],
+            settings["state_file"],
+            {},
+            lock_dir=settings["lock_dir"],
+            birdc=settings["birdc"],
+        )
+        return {"enabled": True, "routes": 0, "changed": changed}
+
     entries = provider_entries(provider, rules, settings, now=current_time)
     state = merge_state(
         load_state(settings["state_file"]),
