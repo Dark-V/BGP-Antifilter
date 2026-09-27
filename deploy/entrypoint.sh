@@ -305,6 +305,13 @@ touch "$ROUTES"
 touch "$DYNAMIC_ROUTES"
 touch "$LAST_GOOD_ROUTES"
 touch "$CONTAINER_LOG_FILE"
+
+case "$(printf '%s' "$DYNAMIC_DNS_PROVIDER" | tr '[:upper:]' '[:lower:]')" in
+  ""|off|none|disabled)
+    : >"$DYNAMIC_ROUTES"
+    rm -f "$DYNAMIC_DNS_STATE_FILE"
+    ;;
+esac
 exec >>"$CONTAINER_LOG_FILE" 2>&1
 echo "container log started at $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
 
