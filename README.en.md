@@ -56,6 +56,7 @@ If the container already has a confirmed snapshot from a previous successful run
 - `generated/config/include-asns.txt` - the user's working ASN list.
 - `generated/config/include-countries.txt` - the user's working ISO 3166-1 alpha-2 country list (`US`, `DE`, `NL`).
 - `generated/config/include-domains.txt` - the user's working include-domain list.
+- `generated/config/dynamic-domains.txt` - exact/wildcard domains learned from DNS Query Log responses.
 - `generated/config/exclude-domains.txt` - the user's working exclude-domain list.
 - `generated/` - generated route cache, not stored in git.
 
@@ -96,6 +97,14 @@ ROUTER_ID=192.168.55.5
 BGP_COMMUNITY=65432,500
 UPDATE_INTERVAL=1800
 CACHE_MAX_AGE=604800
+DYNAMIC_DNS_PROVIDER=
+DYNAMIC_DNS_URL=
+DYNAMIC_DNS_USERNAME=
+DYNAMIC_DNS_PASSWORD=
+DYNAMIC_DNS_POLL_INTERVAL=5
+DYNAMIC_DNS_MAX_AGE=21600
+DYNAMIC_DNS_QUERY_LIMIT=200
+DYNAMIC_DNS_TIMEOUT=5
 INCLUDE_GOOGLE_RANGES=1
 REQUIRE_ALL_URL_SOURCES=0
 MIN_PREFIX_LENGTH=8
@@ -118,6 +127,13 @@ ADMIN_PASSWORD=
 - `BGP_COMMUNITY` - community added to exported routes.
 - `UPDATE_INTERVAL` - route refresh interval in seconds.
 - `CACHE_MAX_AGE` - maximum source cache age in seconds; defaults to 7 days.
+- `DYNAMIC_DNS_PROVIDER` - passive DNS learning provider; currently `adguard` is supported, an empty value disables the feature.
+- `DYNAMIC_DNS_URL` - AdGuard Home base URL, for example `http://192.168.88.16:3000`.
+- `DYNAMIC_DNS_USERNAME` / `DYNAMIC_DNS_PASSWORD` - AdGuard Home Basic Auth credentials; keep them in `.env`, the password is intentionally not exposed in web settings.
+- `DYNAMIC_DNS_POLL_INTERVAL` - Query Log polling interval; defaults to 5 seconds.
+- `DYNAMIC_DNS_MAX_AGE` - how long to retain a learned IPv4 after the last matching DNS query; defaults to 6 hours.
+- `DYNAMIC_DNS_QUERY_LIMIT` - maximum Query Log records requested per search.
+- `DYNAMIC_DNS_TIMEOUT` - REST API timeout in seconds.
 - `INCLUDE_GOOGLE_RANGES` - `1` adds default Google service ranges from `goog.json` excluding Google Cloud from `cloud.json`; `0` disables this source.
 - `REQUIRE_ALL_URL_SOURCES` - `1` makes every URL from `generated/config/lists.txt` mandatory; `0` by default allows an unavailable URL source to be skipped if the final route set can still be built from other data.
 - `MIN_PREFIX_LENGTH` - shortest IPv4 prefix accepted from external sources; defaults to `8`.
@@ -226,6 +242,8 @@ For country sources, the updater queries `stat.ripe.net` first and automatically
 For YouTube, a dedicated Google ranges source is enabled: with `INCLUDE_GOOGLE_RANGES=1`, the container uses `https://www.gstatic.com/ipranges/goog.json`, subtracts `https://www.gstatic.com/ipranges/cloud.json`, and adds the remaining IPv4 prefixes. YouTube domains in `generated/config/include-domains.txt` remain an additional point source.
 
 Domains to force-add go into `generated/config/include-domains.txt`. These domains are best-effort: if a domain temporarily does not resolve and has no cache, it is marked as `skipped`, but route updates continue.
+
+For dynamic CDN hostnames, use `generated/config/dynamic-domains.txt`. Exact names and patterns such as `*.ttvnw.net` are supported. With `DYNAMIC_DNS_PROVIDER=adguard`, a separate worker polls `/control/querylog`, verifies wildcard matches locally, learns only real IPv4 `A` answers, writes them to `generated/dynamic-routes.conf`, and runs `birdc configure` only when the learned route set changes. This avoids routing entire shared CloudFront/Fastly ranges.
 
 Domains to exclude go into `generated/config/exclude-domains.txt`. These domains are strict: if an exclude domain cannot be resolved and has no fresh cache, the new `routes.conf` is not applied. If an excluded IP is inside a larger prefix, the generator splits the prefix into smaller routes without that IP.
 
