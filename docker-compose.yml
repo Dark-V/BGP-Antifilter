@@ -27,7 +27,18 @@ services:
       INCLUDE_ASNS_FILE: /etc/bird/generated/config/include-asns.txt
       INCLUDE_COUNTRIES_FILE: /etc/bird/generated/config/include-countries.txt
       INCLUDE_DOMAINS_FILE: /etc/bird/generated/config/include-domains.txt
+      DYNAMIC_DOMAINS_FILE: /etc/bird/generated/config/dynamic-domains.txt
       EXCLUDE_DOMAINS_FILE: /etc/bird/generated/config/exclude-domains.txt
+      DYNAMIC_ROUTES_FILE: /etc/bird/generated/dynamic-routes.conf
+      DYNAMIC_DNS_STATE_FILE: /etc/bird/generated/dynamic-dns-cache.json
+      DYNAMIC_DNS_PROVIDER: "${DYNAMIC_DNS_PROVIDER:-}"
+      DYNAMIC_DNS_URL: "${DYNAMIC_DNS_URL:-}"
+      DYNAMIC_DNS_USERNAME: "${DYNAMIC_DNS_USERNAME:-}"
+      DYNAMIC_DNS_PASSWORD: "${DYNAMIC_DNS_PASSWORD:-}"
+      DYNAMIC_DNS_POLL_INTERVAL: "${DYNAMIC_DNS_POLL_INTERVAL:-5}"
+      DYNAMIC_DNS_MAX_AGE: "${DYNAMIC_DNS_MAX_AGE:-21600}"
+      DYNAMIC_DNS_QUERY_LIMIT: "${DYNAMIC_DNS_QUERY_LIMIT:-200}"
+      DYNAMIC_DNS_TIMEOUT: "${DYNAMIC_DNS_TIMEOUT:-5}"
       INCLUDE_GOOGLE_RANGES: "${INCLUDE_GOOGLE_RANGES:-1}"
       UPDATE_INTERVAL: "${UPDATE_INTERVAL:-1800}"
       CACHE_MAX_AGE: "${CACHE_MAX_AGE:-604800}"
@@ -75,7 +86,14 @@ services:
       INCLUDE_ASNS_FILE: /etc/bird/generated/config/include-asns.txt
       INCLUDE_COUNTRIES_FILE: /etc/bird/generated/config/include-countries.txt
       INCLUDE_DOMAINS_FILE: /etc/bird/generated/config/include-domains.txt
+      DYNAMIC_DOMAINS_FILE: /etc/bird/generated/config/dynamic-domains.txt
       EXCLUDE_DOMAINS_FILE: /etc/bird/generated/config/exclude-domains.txt
+      DYNAMIC_DNS_PROVIDER: "${DYNAMIC_DNS_PROVIDER:-}"
+      DYNAMIC_DNS_URL: "${DYNAMIC_DNS_URL:-}"
+      DYNAMIC_DNS_POLL_INTERVAL: "${DYNAMIC_DNS_POLL_INTERVAL:-5}"
+      DYNAMIC_DNS_MAX_AGE: "${DYNAMIC_DNS_MAX_AGE:-21600}"
+      DYNAMIC_DNS_QUERY_LIMIT: "${DYNAMIC_DNS_QUERY_LIMIT:-200}"
+      DYNAMIC_DNS_TIMEOUT: "${DYNAMIC_DNS_TIMEOUT:-5}"
       INCLUDE_GOOGLE_RANGES: "${INCLUDE_GOOGLE_RANGES:-1}"
       CACHE_MAX_AGE: "${CACHE_MAX_AGE:-604800}"
       MIN_PREFIX_LENGTH: "${MIN_PREFIX_LENGTH:-8}"
