@@ -62,6 +62,18 @@ SETTINGS_SECTIONS = [
         ],
     },
     {
+        "id": "dynamic_dns",
+        "title": "Dynamic DNS",
+        "items": [
+            {"key": "DYNAMIC_DNS_PROVIDER", "type": "choice", "default": "", "allow_empty": True, "options": ["", "adguard"], "requires_restart": True},
+            {"key": "DYNAMIC_DNS_URL", "type": "url", "default": "", "allow_empty": True, "requires_restart": True},
+            {"key": "DYNAMIC_DNS_POLL_INTERVAL", "type": "int", "default": "5", "min": 1, "max": 3600, "unit": "sec", "requires_restart": True},
+            {"key": "DYNAMIC_DNS_MAX_AGE", "type": "int", "default": "21600", "min": 60, "max": 2592000, "unit": "sec", "requires_restart": True},
+            {"key": "DYNAMIC_DNS_QUERY_LIMIT", "type": "int", "default": "200", "min": 1, "max": 5000, "requires_restart": True},
+            {"key": "DYNAMIC_DNS_TIMEOUT", "type": "int", "default": "5", "min": 1, "max": 60, "unit": "sec", "requires_restart": True},
+        ],
+    },
+    {
         "id": "security",
         "title": "Безопасность генерации",
         "items": [
@@ -220,6 +232,21 @@ def validate_setting(key, value):
         if "max" in spec and number > spec["max"]:
             raise ValueError(f"{key} must be at most {spec['max']}")
         return str(int(number)) if number.is_integer() else str(number)
+    if setting_type == "choice":
+        options = [str(option) for option in spec.get("options", [])]
+        if raw not in options:
+            labels = ", ".join(option or "<disabled>" for option in options)
+            raise ValueError(f"{key} must be one of: {labels}")
+        return raw
+    if setting_type == "url":
+        parsed = urlparse(raw)
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+            raise ValueError(f"{key} must be an http:// or https:// URL")
+        if parsed.username or parsed.password:
+            raise ValueError(
+                f"{key} must not contain credentials; use DYNAMIC_DNS_USERNAME/PASSWORD environment variables"
+            )
+        return raw.rstrip("/")
     if setting_type == "dns_list":
         try:
             values = dns_resolver.parse_nameservers(raw)
