@@ -7,6 +7,20 @@ INCLUDE_ASNS_FILE="${INCLUDE_ASNS_FILE:-/etc/bird/include-asns.txt}"
 INCLUDE_COUNTRIES_FILE="${INCLUDE_COUNTRIES_FILE:-/etc/bird/include-countries.txt}"
 INCLUDE_DOMAINS_FILE="${INCLUDE_DOMAINS_FILE:-/etc/bird/include-domains.txt}"
 EXCLUDE_DOMAINS_FILE="${EXCLUDE_DOMAINS_FILE:-/etc/bird/exclude-domains.txt}"
+DYNAMIC_DOMAINS_FILE="${DYNAMIC_DOMAINS_FILE:-/etc/bird/generated/config/dynamic-domains.txt}"
+DYNAMIC_ROUTES_FILE="${DYNAMIC_ROUTES_FILE:-/etc/bird/generated/dynamic-routes.conf}"
+DYNAMIC_DNS_STATE_FILE="${DYNAMIC_DNS_STATE_FILE:-/etc/bird/generated/dynamic-dns-state.json}"
+DYNAMIC_DNS_STATUS_FILE="${DYNAMIC_DNS_STATUS_FILE:-/etc/bird/generated/dynamic-dns-status.json}"
+DYNAMIC_DNS_ENABLED="${DYNAMIC_DNS_ENABLED:-0}"
+DYNAMIC_DNS_PROVIDER="${DYNAMIC_DNS_PROVIDER:-adguard}"
+DYNAMIC_DNS_URL="${DYNAMIC_DNS_URL:-}"
+DYNAMIC_DNS_USERNAME="${DYNAMIC_DNS_USERNAME:-}"
+DYNAMIC_DNS_PASSWORD="${DYNAMIC_DNS_PASSWORD:-}"
+DYNAMIC_DNS_INTERVAL="${DYNAMIC_DNS_INTERVAL:-2}"
+DYNAMIC_DNS_QUERY_LIMIT="${DYNAMIC_DNS_QUERY_LIMIT:-1000}"
+DYNAMIC_DNS_HTTP_TIMEOUT="${DYNAMIC_DNS_HTTP_TIMEOUT:-5}"
+DYNAMIC_DNS_FALLBACK_TTL="${DYNAMIC_DNS_FALLBACK_TTL:-300}"
+DYNAMIC_DNS_MAX_TTL="${DYNAMIC_DNS_MAX_TTL:-86400}"
 INCLUDE_GOOGLE_RANGES="${INCLUDE_GOOGLE_RANGES:-1}"
 UPDATE_INTERVAL="${UPDATE_INTERVAL:-1800}"
 CACHE_MAX_AGE="${CACHE_MAX_AGE:-604800}"
@@ -61,6 +75,8 @@ load_settings_env() {
 
 validate_env() {
   export MY_AS MT_AS MT_IP BIRD_IP ROUTER_ID BGP_COMMUNITY UPDATE_INTERVAL CACHE_MAX_AGE ADMIN_ENABLED ADMIN_PORT ADMIN_PASSWORD
+  export DYNAMIC_DNS_ENABLED DYNAMIC_DNS_PROVIDER DYNAMIC_DNS_URL DYNAMIC_DNS_INTERVAL DYNAMIC_DNS_QUERY_LIMIT
+  export DYNAMIC_DNS_HTTP_TIMEOUT DYNAMIC_DNS_FALLBACK_TTL DYNAMIC_DNS_MAX_TTL
   python3 - <<'PY'
 import ipaddress
 import os
@@ -120,6 +136,34 @@ def validate_community():
             fail("BGP_COMMUNITY parts must be between 0 and 65535")
 
 
+def validate_dynamic_dns():
+    enabled = os.environ["DYNAMIC_DNS_ENABLED"]
+    if enabled not in {"0", "1"}:
+        fail("DYNAMIC_DNS_ENABLED must be 0 or 1")
+    if enabled != "1":
+        return
+
+    if os.environ["DYNAMIC_DNS_PROVIDER"] != "adguard":
+        fail("DYNAMIC_DNS_PROVIDER currently supports only adguard")
+    if not os.environ["DYNAMIC_DNS_URL"].strip():
+        fail("DYNAMIC_DNS_URL must be set when DYNAMIC_DNS_ENABLED=1")
+
+    numeric = {
+        "DYNAMIC_DNS_INTERVAL": float,
+        "DYNAMIC_DNS_QUERY_LIMIT": int,
+        "DYNAMIC_DNS_HTTP_TIMEOUT": float,
+        "DYNAMIC_DNS_FALLBACK_TTL": int,
+        "DYNAMIC_DNS_MAX_TTL": int,
+    }
+    for name, parser in numeric.items():
+        try:
+            value = parser(os.environ[name])
+        except ValueError:
+            fail(f"{name} must be numeric")
+        if value <= 0:
+            fail(f"{name} must be greater than zero")
+
+
 def validate_admin():
     enabled = os.environ["ADMIN_ENABLED"]
     if enabled not in {"0", "1"}:
@@ -144,6 +188,7 @@ validate_ipv4("BIRD_IP")
 validate_ipv4("ROUTER_ID")
 validate_update_interval()
 validate_community()
+validate_dynamic_dns()
 validate_admin()
 PY
 }
@@ -289,16 +334,23 @@ ensure_runtime_config_file "$INCLUDE_ASNS_FILE" "include-asns.txt"
 ensure_runtime_config_file "$INCLUDE_COUNTRIES_FILE" "include-countries.txt"
 ensure_runtime_config_file "$INCLUDE_DOMAINS_FILE" "include-domains.txt"
 ensure_runtime_config_file "$EXCLUDE_DOMAINS_FILE" "exclude-domains.txt"
+ensure_runtime_config_file "$DYNAMIC_DOMAINS_FILE" "dynamic-domains.txt"
 touch "$ROUTES"
 touch "$LAST_GOOD_ROUTES"
+# Learned routes are repopulated after BIRD starts. This avoids advertising stale
+# dynamic IPs from a previous container start before TTL pruning runs.
+: >"$DYNAMIC_ROUTES_FILE"
 touch "$CONTAINER_LOG_FILE"
 exec >>"$CONTAINER_LOG_FILE" 2>&1
 echo "container log started at $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
 
-export LISTS_FILE DOMAIN_LIST_URLS_FILE INCLUDE_ASNS_FILE INCLUDE_COUNTRIES_FILE INCLUDE_DOMAINS_FILE EXCLUDE_DOMAINS_FILE
+export LISTS_FILE DOMAIN_LIST_URLS_FILE INCLUDE_ASNS_FILE INCLUDE_COUNTRIES_FILE INCLUDE_DOMAINS_FILE EXCLUDE_DOMAINS_FILE DYNAMIC_DOMAINS_FILE
 export INCLUDE_GOOGLE_RANGES CACHE_DIR CACHE_MAX_AGE STATUS_FILE METRICS_FILE RUNTIME_FILE SETTINGS_ENV_FILE
 export ROUTES_FILE="$ROUTES"
 export LAST_GOOD_ROUTES_FILE="$LAST_GOOD_ROUTES"
+export DYNAMIC_DNS_ENABLED DYNAMIC_DNS_PROVIDER DYNAMIC_DNS_URL DYNAMIC_DNS_USERNAME DYNAMIC_DNS_PASSWORD
+export DYNAMIC_DNS_INTERVAL DYNAMIC_DNS_QUERY_LIMIT DYNAMIC_DNS_HTTP_TIMEOUT DYNAMIC_DNS_FALLBACK_TTL DYNAMIC_DNS_MAX_TTL
+export DYNAMIC_ROUTES_FILE DYNAMIC_DNS_STATE_FILE DYNAMIC_DNS_STATUS_FILE
 export ADMIN_ENABLED ADMIN_PORT ADMIN_PASSWORD
 
 render_bird_config
@@ -375,6 +427,11 @@ bird -f -c "$BIRD_CONFIG" &
 BIRD_PID="$!"
 
 sleep 2
+
+if [ "$DYNAMIC_DNS_ENABLED" = "1" ]; then
+  echo "Starting dynamic DNS watcher provider=$DYNAMIC_DNS_PROVIDER url=$DYNAMIC_DNS_URL interval=${DYNAMIC_DNS_INTERVAL}s"
+  /dynamic-dns.py &
+fi
 
 if [ "$startup_refresh_in_background" = "1" ]; then
   update_routes apply startup &

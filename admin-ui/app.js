@@ -69,7 +69,8 @@ const dict = {
     listHintCountries: "Add 2-letter country codes here to load IPv4 prefixes assigned to those countries from RIPE Stat RIR data.",
     listHintGoogleRanges: "Uses Google `goog.json`, subtracts Google Cloud prefixes from `cloud.json`, and adds the remaining IPv4 prefixes. In practice this is mainly the YouTube source.",
     lastGeneratedRoutes: "Routes from last generation",
-    googleRangesSourceTitle: "Google service ranges source"
+    googleRangesSourceTitle: "Google service ranges source",
+    listHintDynamicDomains: "Dynamic DNS patterns learned from AdGuard Home query log. Supports exact hosts, domain: / +. suffix rules, and * / ? globs. Learned IPv4 addresses are advertised only until their DNS TTL expires."
   },
   ru: {
     dashboard: "Панель", lists: "Списки", tools: "Инструменты", settings: "Настройки", loginTitle: "Вход",
@@ -142,7 +143,8 @@ const dict = {
     listHintCountries: "Добавляйте сюда двухбуквенные коды стран, чтобы загружать IPv4-префиксы этих стран из RIR-данных через RIPE Stat.",
     listHintGoogleRanges: "Берутся Google `goog.json`, из них вычитаются Google Cloud префиксы из `cloud.json`, а оставшиеся IPv4-префиксы добавляются в маршруты. На практике это в основном источник для YouTube.",
     lastGeneratedRoutes: "Получено с последней генерации",
-    googleRangesSourceTitle: "Источник диапазонов сервисов Google"
+    googleRangesSourceTitle: "Источник диапазонов сервисов Google",
+    listHintDynamicDomains: "Динамические DNS-шаблоны, которые обучаются по query log AdGuard Home. Поддерживаются точные хосты, suffix-правила domain: / +. и glob-шаблоны * / ?. Найденные IPv4 анонсируются только до истечения DNS TTL."
   }
 };
 
@@ -204,7 +206,8 @@ const listLabels = {
   "countries": "Countries",
   "google-ranges": "Google ranges",
   "include-domains": "Include domains",
-  "exclude-domains": "Exclude domains"
+  "exclude-domains": "Exclude domains",
+  "dynamic-domains": "Dynamic DNS"
 };
 const listIcons = {
   "urls": "link-2",
@@ -212,7 +215,8 @@ const listIcons = {
   "countries": "flag",
   "google-ranges": "globe",
   "include-domains": "circle-plus",
-  "exclude-domains": "circle-minus"
+  "exclude-domains": "circle-minus",
+  "dynamic-domains": "radar"
 };
 const settingLabels = {
   UPDATE_INTERVAL: {ru: "Интервал автообновления", en: "Auto refresh interval"},
@@ -2092,7 +2096,7 @@ async function loadList(name) {
   document.querySelectorAll("[data-list]").forEach(button => button.classList.toggle("active", button.dataset.list === name));
   $("list-title").textContent = listLabels[name];
   const special = isSpecialList(name);
-  const showHintPanel = special || name === "asns" || name === "include-domains";
+  const showHintPanel = special || name === "asns" || name === "include-domains" || name === "dynamic-domains";
   $("add-list-form").classList.toggle("hidden", special);
   $("list-source-settings").classList.toggle("hidden", !showHintPanel);
   $("list-tiles").classList.toggle("hidden", false);
@@ -2204,7 +2208,9 @@ function renderListHint(name) {
       ? "listHintCountries"
       : name === "google-ranges"
         ? "listHintGoogleRanges"
-        : "";
+        : name === "dynamic-domains"
+          ? "listHintDynamicDomains"
+          : "";
   if (!key) {
     $("list-source-settings").innerHTML = "";
     return;
@@ -2405,7 +2411,7 @@ function domainListSourceCardsHtml(content = currentDomainListUrlContent()) {
             </button>
           </div>
         </div>
-        ${renderListSourceStats(record)}
+        ${currentList === "dynamic-domains" ? "" : renderListSourceStats(record)}
       </article>`;
   }).join("") : `<div class="muted-box">${t("domainListEmpty")}</div>`;
 }
@@ -2589,8 +2595,8 @@ function renderListTiles() {
   const active = lines.filter(line => line.active);
   const comments = lines.filter(line => line.comment);
   $("list-tiles").innerHTML = active.length ? active.map(line => {
-    const record = listSourceRecord(currentList, line.value);
-    const level = record ? eventLevel(record) : "warn";
+    const record = currentList === "dynamic-domains" ? null : listSourceRecord(currentList, line.value);
+    const level = currentList === "dynamic-domains" ? "" : (record ? eventLevel(record) : "warn");
     const namedUrl = currentList === "urls" ? parseNamedUrlSourceLine(line.value) : null;
     const title = namedUrl ? namedUrl.name : line.value;
     const subtitle = namedUrl ? namedUrl.url : "";
@@ -2611,7 +2617,7 @@ function renderListTiles() {
             </button>
           </div>
         </div>
-        ${renderListSourceStats(record)}
+        ${currentList === "dynamic-domains" ? "" : renderListSourceStats(record)}
       </article>`;
   }).join("") : `<div class="muted-box">${t("emptyList")}</div>`;
   if (comments.length) {

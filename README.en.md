@@ -87,7 +87,7 @@ If you are upgrading from the previous repository layout, move your custom list 
 Main settings:
 
 ```dotenv
-BGP_ANTIFILTER_VERSION=0.4.5
+BGP_ANTIFILTER_VERSION=0.4.6
 MY_AS=64500
 MT_AS=65455
 MT_IP=192.168.55.1
@@ -109,7 +109,7 @@ ADMIN_PORT=8080
 ADMIN_PASSWORD=
 ```
 
-- `BGP_ANTIFILTER_VERSION` - local Docker image tag; defaults to `0.4.5`.
+- `BGP_ANTIFILTER_VERSION` - local Docker image tag; defaults to `0.4.6`.
 - `MY_AS` - AS number used by the BIRD container.
 - `MT_AS` - MikroTik AS number.
 - `MT_IP` - MikroTik IP address.
@@ -397,3 +397,34 @@ add chain=antifilter-in rule="if (bgp-communities includes 65432:500) { accept }
 ```
 
 AS and IP parameters must match the values in `.env`.
+
+### Dynamic domains via AdGuard Home
+
+Starting with 0.4.6, BGP Antifilter can learn from the AdGuard Home query log and dynamically advertise IPv4 addresses for domain patterns that cannot be pre-resolved into a finite IP list. The feature is disabled by default.
+
+```dotenv
+DYNAMIC_DNS_ENABLED=1
+DYNAMIC_DNS_PROVIDER=adguard
+DYNAMIC_DNS_URL=http://192.168.88.16:3000
+DYNAMIC_DNS_USERNAME=
+DYNAMIC_DNS_PASSWORD=
+DYNAMIC_DNS_INTERVAL=2
+DYNAMIC_DNS_QUERY_LIMIT=1000
+```
+
+AdGuard Home query logging must be enabled and client DNS requests must pass through that instance. The watcher uses `GET /control/querylog`. Set the AdGuard Home username and password when API authentication is enabled.
+
+Patterns are stored in `generated/config/dynamic-domains.txt`. Exact hosts, `domain:example.com` / `+.example.com` suffix rules, and `*` / `?` glob patterns are supported:
+
+```text
+gql.twitch.tv
+usher.ttvnw.net
+passport.twitch.tv
+video-weaver.*.hls.ttvnw.net
+*.playlist.ttvnw.net
+*.playlist.live-video.net
+```
+
+The watcher reads real A answers from the query log, writes learned IPv4 addresses as `/32` routes to a separate `dynamic-routes.conf`, and expires them according to DNS TTL. A changed route set is applied with `birdc configure`; the regular `routes.conf` is not rewritten.
+
+This is a learning mechanism, not an inline DNS proxy: the first connection to a brand-new wildcard host can race the polling interval and use the previous route. Once the hostname appears in the query log, its route is kept until TTL expiry. Strict first-packet routing requires an inline DNS-aware router mechanism or transparent proxy.
