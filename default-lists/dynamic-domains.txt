@@ -1,0 +1,13 @@
+# Dynamic DNS patterns learned from AdGuard Home query log.
+# Exact hostname:
+# gql.twitch.tv
+#
+# Suffix syntax:
+# domain:ttvnw.net
+# +.ttvnw.net
+#
+# Glob syntax:
+# video-weaver.*.hls.ttvnw.net
+# *.playlist.ttvnw.net
+#
+# regexp: and keyword: rules are intentionally not supported here.

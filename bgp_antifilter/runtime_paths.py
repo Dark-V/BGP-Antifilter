@@ -9,6 +9,7 @@ LIST_FILE_SPECS = {
     "countries": ("INCLUDE_COUNTRIES_FILE", "/etc/bird/include-countries.txt"),
     "include-domains": ("INCLUDE_DOMAINS_FILE", "/etc/bird/include-domains.txt"),
     "exclude-domains": ("EXCLUDE_DOMAINS_FILE", "/etc/bird/exclude-domains.txt"),
+    "dynamic-domains": ("DYNAMIC_DOMAINS_FILE", "/etc/bird/generated/config/dynamic-domains.txt"),
 }
 
 GENERATED_PATH_SPECS = {
@@ -22,6 +23,9 @@ GENERATED_PATH_SPECS = {
     "settings_file": ("SETTINGS_FILE", "/etc/bird/generated/settings.json"),
     "settings_env_file": ("SETTINGS_ENV_FILE", "/etc/bird/generated/settings.env"),
     "cache_dir": ("CACHE_DIR", "/etc/bird/generated/cache"),
+    "dynamic_routes_file": ("DYNAMIC_ROUTES_FILE", "/etc/bird/generated/dynamic-routes.conf"),
+    "dynamic_dns_state_file": ("DYNAMIC_DNS_STATE_FILE", "/etc/bird/generated/dynamic-dns-state.json"),
+    "dynamic_dns_status_file": ("DYNAMIC_DNS_STATUS_FILE", "/etc/bird/generated/dynamic-dns-status.json"),
 }
 
 

@@ -86,7 +86,7 @@ cp .env.example .env
 Основные параметры:
 
 ```dotenv
-BGP_ANTIFILTER_VERSION=0.4.5
+BGP_ANTIFILTER_VERSION=0.4.6
 MY_AS=64500
 MT_AS=65455
 MT_IP=192.168.55.1
@@ -111,7 +111,7 @@ ADMIN_PASSWORD=
 Где:
 
 - `MY_AS` - AS контейнера с BIRD.
-- `BGP_ANTIFILTER_VERSION` - тег локального Docker-образа, по умолчанию `0.4.5`.
+- `BGP_ANTIFILTER_VERSION` - тег локального Docker-образа, по умолчанию `0.4.6`.
 - `MT_AS` - AS MikroTik.
 - `MT_IP` - IP-адрес MikroTik.
 - `BIRD_IP` - IP-адрес хоста или интерфейса, с которого BIRD устанавливает BGP-сессию.
@@ -225,6 +225,37 @@ NL
 Для country-источников генератор сначала обращается к `stat.ripe.net`, а если сервис временно недоступен, автоматически переключается на официальные delegated stats реестров `afrinic`, `apnic`, `arin`, `lacnic` и `ripencc`. Если у страны есть свежий кеш, он также может быть использован по тем же правилам, что и для остальных сетевых источников.
 
 Для YouTube включен отдельный источник Google ranges: при `INCLUDE_GOOGLE_RANGES=1` контейнер берет `https://www.gstatic.com/ipranges/goog.json`, вычитает `https://www.gstatic.com/ipranges/cloud.json` и добавляет оставшиеся IPv4-префиксы. Домены YouTube в `generated/config/include-domains.txt` остаются как дополнительный точечный источник.
+
+### Динамические домены через AdGuard Home
+
+Начиная с 0.4.6 BGP Antifilter может обучаться по query log AdGuard Home и динамически анонсировать IPv4 для доменных шаблонов, которые нельзя заранее превратить в конечный список IP. Функция выключена по умолчанию.
+
+```dotenv
+DYNAMIC_DNS_ENABLED=1
+DYNAMIC_DNS_PROVIDER=adguard
+DYNAMIC_DNS_URL=http://192.168.88.16:3000
+DYNAMIC_DNS_USERNAME=
+DYNAMIC_DNS_PASSWORD=
+DYNAMIC_DNS_INTERVAL=2
+DYNAMIC_DNS_QUERY_LIMIT=1000
+```
+
+AdGuard Home должен вести query log, а DNS-запросы клиентов должны проходить через него. Watcher использует `GET /control/querylog`. При включенной авторизации укажите логин и пароль AdGuard Home.
+
+Шаблоны хранятся в `generated/config/dynamic-domains.txt`. Поддерживаются точные хосты, suffix-правила `domain:example.com` и `+.example.com`, а также glob-шаблоны `*` и `?`:
+
+```text
+gql.twitch.tv
+usher.ttvnw.net
+passport.twitch.tv
+video-weaver.*.hls.ttvnw.net
+*.playlist.ttvnw.net
+*.playlist.live-video.net
+```
+
+Watcher читает реальные ответы типа A из query log, добавляет найденные IPv4 как `/32` в отдельный `dynamic-routes.conf` и удаляет их после истечения DNS TTL. При изменении набора адресов выполняется `birdc configure`; основной `routes.conf` не переписывается.
+
+Это learning-механизм, а не inline DNS proxy: первый запрос к совершенно новому wildcard-хосту может успеть уйти по старому маршруту до следующего опроса AdGuard Home. После появления hostname в query log маршрут поддерживается до его TTL. Для строгой маршрутизации самого первого пакета нужен inline DNS-aware механизм на роутере или transparent proxy.
 
 Домены, которые нужно принудительно добавить в маршруты, указываются в `generated/config/include-domains.txt`. Эти домены обрабатываются как best-effort: если домен временно не резолвится и кеша для него нет, он помечается как `skipped`, но обновление маршрутов продолжается.
 
