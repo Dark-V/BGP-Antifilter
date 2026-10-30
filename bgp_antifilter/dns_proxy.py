@@ -24,11 +24,13 @@ from .dns_routes import RouteManager, domain_key
 LOG = logging.getLogger("dns-proxy")
 
 
-def answer_addresses(response):
-    """Follow the question's CNAME/SVCB chain; never learn unrelated glue."""
+def reachable_names(response):
+    """Names linked to the question, with each alias RRset's cache lifetime."""
     if response.rcode() != dns.rcode.NOERROR or response.flags & dns.flags.TC:
-        return []
-    reachable = {response.question[0].name: 0xFFFFFFFF}
+        return {}
+    if not response.question:
+        return {}
+    reachable = {response.question[0].name: 0}
     records = response.answer
     for _ in range(32):
         changed = False
@@ -40,15 +42,31 @@ def answer_addresses(response):
             for record in rrset:
                 target = record.target
                 if target.is_absolute() and target != dns.name.root and target not in reachable:
-                    reachable[target] = min(reachable[rrset.name], rrset.ttl)
+                    reachable[target] = rrset.ttl
                     changed = True
         if not changed:
             break
+    return reachable
+
+
+def answer_targets(response):
+    reachable = reachable_names(response)
+    if not response.question:
+        return []
+    return [(domain_key(name.to_text()), ttl) for name, ttl in reachable.items()
+            if name != response.question[0].name]
+
+
+def answer_addresses(response):
+    """Follow the question's CNAME/SVCB chain; never learn unrelated glue."""
+    reachable = reachable_names(response)
     addresses = []
-    for rrset in records + response.additional:
+    for rrset in response.answer + response.additional:
         if rrset.name not in reachable or rrset.rdclass != dns.rdataclass.IN:
             continue
-        ttl = min(rrset.ttl, reachable[rrset.name])
+        # Each RRset has its own cache lifetime. A short CNAME/SVCB alias
+        # must not withdraw an address the client may still cache longer.
+        ttl = rrset.ttl
         for record in rrset:
             if rrset.rdtype == dns.rdatatype.A:
                 addresses.append((record.address, ttl))
@@ -106,7 +124,10 @@ class Proxy:
             try:
                 response = self.exchange(request, tcp=tcp)
                 addresses = answer_addresses(response)
-                if addresses:
+                targets = answer_targets(response)
+                if targets:
+                    self.manager.observe(domain_key(request.question[0].name.to_text()), addresses, targets=targets)
+                elif addresses:
                     self.manager.observe(domain_key(request.question[0].name.to_text()), addresses)
             except Exception as exc:
                 # Do not hand out a new address if its route could not be applied.
@@ -129,6 +150,10 @@ class BoundedServer:
         super().__init__(address, handler)
 
     def process_request(self, request, client_address):
+        # Reject peers before allocating a worker or reading a TCP frame.
+        if not self.proxy.permits(client_address[0]):
+            self.shutdown_request(request)
+            return
         if not self.slots.acquire(blocking=False):
             self.shutdown_request(request)
             return
@@ -240,21 +265,34 @@ def main():
     ready = ReadyServer((bind, int(os.environ.get("DNS_PROXY_HEALTH_PORT", "8053"))), ReadyHandler, proxy)
     ready.dns_address = udp.server_address
     ready.check_lock = threading.Lock()
-    for server in (udp, tcp, ready):
-        threading.Thread(target=server.serve_forever, daemon=True).start()
     LOG.info("DNS proxy %s:%s -> %s:%s", bind, port, upstream, upstream_port)
     try:
-        while True:
-            threading.Event().wait(5)
-            try:
-                proxy.manager.refresh()
-            except Exception as exc:
-                LOG.warning("Route maintenance failed: %s", exc)
+        serve((udp, tcp, ready), proxy.manager)
     except KeyboardInterrupt:
         pass
+
+
+def serve(servers, manager, interval=5):
+    threads = []
+    try:
+        for server in servers:
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            threads.append(thread)
+        while True:
+            if not all(thread.is_alive() for thread in threads):
+                # Docker restart policies act on process exit, not merely on
+                # an unhealthy check. Do not leave a dead listener stranded.
+                raise RuntimeError("DNS proxy listener stopped unexpectedly")
+            threading.Event().wait(interval)
+            try:
+                manager.refresh()
+            except Exception as exc:
+                LOG.warning("Route maintenance failed: %s", exc)
     finally:
-        for server in (udp, tcp, ready):
-            server.shutdown()
+        for index, server in enumerate(servers):
+            if index < len(threads) and threads[index].is_alive():
+                server.shutdown()
             server.server_close()
 
 

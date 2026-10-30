@@ -4,6 +4,7 @@ import ipaddress
 import io
 import json
 import os
+import random
 from pathlib import Path
 import socket
 import tempfile
@@ -147,6 +148,41 @@ class RouteManagerTests(unittest.TestCase):
         self.assertFalse(self.advertised("8.8.8.8"))
         self.assertTrue(self.advertised("93.184.216.34"))
 
+    def test_separate_alias_lookup_is_tracked_after_restart(self):
+        self.manager.observe("cdn.example.test", [], targets=[("edge.other.test", 10)], now=100)
+        restarted = dns_routes.RouteManager(self.root, bird_command=self.bird)
+        restarted.observe("edge.other.test", [("1.1.1.1", 60)], now=105)
+        self.assertTrue(self.advertised("1.1.1.1"))
+        restarted.refresh(now=111)
+        self.assertFalse(restarted.aliases())
+        self.assertTrue(self.advertised("1.1.1.1"))
+        restarted.refresh(now=166)
+        self.assertFalse(self.advertised("1.1.1.1"))
+
+    def test_expired_alias_and_removed_policy_do_not_route_unselected_domains(self):
+        self.manager.observe("cdn.example.test", [], targets=[("edge.other.test", 10)], now=100)
+        self.manager.observe("edge.other.test", [("1.1.1.1", 60)], now=111)
+        self.assertFalse(self.advertised("1.1.1.1"))
+        self.manager.observe("cdn.example.test", [], targets=[("edge.other.test", 60)], now=112)
+        candidate = policy(2)
+        candidate["include_domains"] = []
+        self.manager.install(candidate, now=113)
+        self.manager.observe("edge.other.test", [("1.1.1.1", 60)], now=114)
+        self.assertFalse(self.advertised("1.1.1.1"))
+
+    def test_separate_alias_lookup_preserves_exclusion_precedence(self):
+        self.manager.observe("cdn.example.test", [], targets=[("edge.other.test", 60)], now=100)
+        self.manager.observe("direct.example.test", [], targets=[("edge.other.test", 60)], now=100)
+        self.manager.observe("edge.other.test", [("93.184.216.34", 60)], now=101)
+        self.assertFalse(self.advertised("93.184.216.34"))
+        self.assertTrue(self.advertised("93.184.216.35"))
+
+    def test_alias_chain_learns_final_address_on_separate_query(self):
+        self.manager.observe("cdn.example.test", [], targets=[("edge.other.test", 10)], now=100)
+        self.manager.observe("edge.other.test", [], targets=[("last.other.test", 100)], now=101)
+        self.manager.observe("last.other.test", [("1.1.1.1", 60)], now=120)
+        self.assertTrue(self.advertised("1.1.1.1"))
+
 
 class WireTests(unittest.TestCase):
     def setUp(self):
@@ -173,10 +209,36 @@ class WireTests(unittest.TestCase):
         message.answer = [dns.rrset.from_text("cdn.example.test.", 20, "IN", "CNAME", "edge.test."),
                           dns.rrset.from_text("edge.test.", 60, "IN", "A", "1.1.1.2")]
         message.additional = [dns.rrset.from_text("unrelated.test.", 60, "IN", "A", "8.8.8.8")]
-        self.assertEqual(dns_proxy.answer_addresses(message), [("1.1.1.2", 20)])
+        # The client can cache the A RRset independently of the CNAME RRset.
+        self.assertEqual(dns_proxy.answer_addresses(message), [("1.1.1.2", 60)])
         message = dns.message.make_response(dns.message.make_query("cdn.example.test", "HTTPS"))
         message.answer = [dns.rrset.from_text("cdn.example.test.", 60, "IN", "HTTPS", '1 . alpn="h2" ipv4hint="1.1.1.1,1.1.1.2"')]
         self.assertEqual(dns_proxy.answer_addresses(message), [("1.1.1.1", 60), ("1.1.1.2", 60)])
+
+    def test_short_cname_does_not_expire_route_while_client_caches_address(self):
+        with tempfile.TemporaryDirectory() as directory, mock.patch.dict(os.environ, {"DNS_ROUTE_GRACE": "0"}):
+            manager = dns_routes.RouteManager(directory, bird_command=mock.Mock(return_value="Reconfigured"))
+            manager.install(policy(), now=100)
+            message = response()
+            message.answer = [dns.rrset.from_text("cdn.example.test.", 5, "IN", "CNAME", "edge.test."),
+                              dns.rrset.from_text("edge.test.", 300, "IN", "A", "1.1.1.2")]
+            manager.observe("cdn.example.test", dns_proxy.answer_addresses(message), now=100)
+            manager.refresh(now=140)
+            self.assertIn("1.1.1.2/32", manager.routes.read_text())
+
+    def test_svcb_alias_does_not_shorten_target_address_ttl(self):
+        message = dns.message.make_response(dns.message.make_query("cdn.example.test", "HTTPS"))
+        message.answer = [dns.rrset.from_text("cdn.example.test.", 5, "IN", "HTTPS", "0 edge.test."),
+                          dns.rrset.from_text("edge.test.", 120, "IN", "HTTPS", "1 . ipv4hint=1.1.1.2")]
+        self.assertEqual(dns_proxy.answer_addresses(message), [("1.1.1.2", 120)])
+
+    def test_cname_only_answer_saves_scope_for_next_query(self):
+        message = response()
+        message.answer = [dns.rrset.from_text("cdn.example.test.", 20, "IN", "CNAME", "edge.other.test.")]
+        self.proxy.exchange.return_value = message
+        answer = self.proxy.handle(dns.message.make_query("cdn.example.test", "A").to_wire(), "127.0.0.1")
+        self.assertEqual(dns.message.from_wire(answer).rcode(), dns.rcode.NOERROR)
+        self.manager.observe.assert_called_once_with("cdn.example.test", [], targets=[("edge.other.test", 20)])
 
     def test_unauthorized_client_and_zone_transfer_are_refused(self):
         for address, qtype in [("192.0.2.1", "A"), ("127.0.0.1", "AXFR")]:
@@ -243,6 +305,16 @@ class SocketIntegrationTests(unittest.TestCase):
         self.assertEqual(self.transports, [False, True])
         self.assertEqual(self.manager.observe.call_count, 2)
 
+    def test_unauthorized_tcp_peer_is_closed_before_reading_a_frame(self):
+        denied = dns_proxy.Proxy(mock.Mock(), "127.0.0.1", allowed=["192.0.2.0/24"])
+        server = dns_proxy.TCPServer(("127.0.0.1", 0), dns_proxy.TCPHandler, denied)
+        self.start_server(server)
+        with socket.create_connection(server.server_address, timeout=1) as connection:
+            # No frame is sent. Rejection must happen before a worker starts
+            # waiting for the length prefix (the normal idle timeout is 5 s).
+            self.assertEqual(connection.recv(1), b"")
+        denied.manager.observe.assert_not_called()
+
     def test_health_checks_real_listeners_and_bird_failure(self):
         server = dns_proxy.ReadyServer(("127.0.0.1", 0), dns_proxy.ReadyHandler, self.proxy)
         server.dns_address = self.address
@@ -292,3 +364,31 @@ class PolicyGenerationTests(unittest.TestCase):
         self.assertIn('"\\"ready\\":true"', text)
         with self.assertRaises(ValueError):
             module.render('192.168.88.17; /system reboot', "192.168.88.16")
+
+
+class ComposeTests(unittest.TestCase):
+    def test_overlapping_and_nested_exclusions_match_reference_builder(self):
+        from bgp_antifilter.generate_routes import build_routes
+        rng = random.Random(53)
+        for _ in range(60):
+            baseline = [ipaddress.ip_network(f"11.0.{rng.randrange(8)}.{rng.randrange(256)}/{rng.randrange(24, 33)}", strict=False)
+                        for _ in range(20)]
+            excluded = [ipaddress.ip_network(f"11.0.{rng.randrange(8)}.{rng.randrange(256)}/{rng.randrange(22, 33)}", strict=False)
+                        for _ in range(15)]
+            candidate = policy()
+            candidate["routes"] = [str(net) for net in baseline]
+            candidate["exclude_routes"] = [str(net) for net in excluded]
+            leases = {"example.test": {"11.0.1.34": 100}, "direct.example.test": {"11.0.4.55": 100}}
+            actual = dns_routes.compose(candidate, leases, 1)
+            expected, _ = build_routes(baseline, excluded + [ipaddress.ip_network("11.0.4.55/32")],
+                                       [ipaddress.ip_network("11.0.1.34/32")])
+            self.assertEqual(actual, "".join(f"    route {net} blackhole;\n" for net in expected))
+
+
+class ListenerLifecycleTests(unittest.TestCase):
+    def test_dead_listener_exits_supervisor_so_docker_can_restart(self):
+        failed = mock.Mock()
+        failed.serve_forever.return_value = None
+        with self.assertRaisesRegex(RuntimeError, "listener stopped"):
+            dns_proxy.serve([failed], mock.Mock(), interval=0.01)
+        failed.server_close.assert_called_once()

@@ -11,6 +11,11 @@
   explicit proxy/direct-AdGuard failover with recovery hysteresis.
 - Added Compose DNS profile, setup documentation, wire/socket tests and
   a real-BIRD Docker integration test.
+- Fixed independent CNAME/address TTL handling and persisted alias scope for
+  separate CDN lookups; retained exclusion precedence across alias chains.
+- Replaced quadratic live route exclusion scans with an interval sweep,
+  rejected unauthorized peers before allocating workers, and made listener
+  failure terminate the process so Docker can restart it.
 
 ## 0.4.4 - 2026-07-07
 

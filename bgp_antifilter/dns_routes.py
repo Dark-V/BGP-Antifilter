@@ -12,9 +12,6 @@ from pathlib import Path
 import subprocess
 import time
 
-from .generate_routes import build_routes
-
-
 def atomic_write(path, text):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -50,15 +47,47 @@ def lease_sets(policy, leases, now):
     return includes, excludes
 
 
+def merge_ranges(values):
+    intervals = []
+    for value in values:
+        network = ipaddress.IPv4Network(value)
+        intervals.append((int(network.network_address), int(network.broadcast_address)))
+    merged = []
+    for start, end in sorted(intervals):
+        if merged and start <= merged[-1][1] + 1:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+        else:
+            merged.append((start, end))
+    return merged
+
+
 def compose(policy, leases, now):
     includes, excludes = lease_sets(policy, leases, now)
-    networks, _ = build_routes(
-        [ipaddress.IPv4Network(value) for value in policy["routes"]],
-        [ipaddress.IPv4Network(value) for value in policy["exclude_routes"]]
-        + [ipaddress.IPv4Network(value) for value in excludes],
-        [ipaddress.IPv4Network(value) for value in includes],
+    candidates = merge_ranges([*policy["routes"], *includes])
+    exclusions = merge_ranges([*policy["exclude_routes"], *excludes])
+    # A sorted interval sweep avoids testing every route against every
+    # exclusion on the synchronous DNS response path.
+    remaining = []
+    index = 0
+    for start, end in candidates:
+        while index < len(exclusions) and exclusions[index][1] < start:
+            index += 1
+        cursor = start
+        while index < len(exclusions) and exclusions[index][0] <= end:
+            cut_start, cut_end = exclusions[index]
+            if cursor < cut_start:
+                remaining.append((cursor, cut_start - 1))
+            cursor = max(cursor, cut_end + 1)
+            if cursor > end:
+                break
+            index += 1
+        if cursor <= end:
+            remaining.append((cursor, end))
+    return "".join(
+        f"    route {network} blackhole;\n"
+        for start, end in remaining
+        for network in ipaddress.summarize_address_range(ipaddress.IPv4Address(start), ipaddress.IPv4Address(end))
     )
-    return "".join(f"    route {network} blackhole;\n" for network in networks)
 
 
 class RouteManager:
@@ -68,6 +97,7 @@ class RouteManager:
         self.last_good = Path(os.environ.get("LAST_GOOD_ROUTES_FILE", str(self.directory / "routes.last-good.conf")))
         self.policy_file = self.directory / "dns-policy.json"
         self.state_file = self.directory / "dns-leases.json"
+        self.alias_file = self.directory / "dns-aliases.json"
         self.lock = self.directory / "dns-apply.lock"
         self.lock_timeout = lock_timeout
         self.bird_command = bird_command or self.bird
@@ -76,6 +106,8 @@ class RouteManager:
         self._signature = None
         self._routes_stamp = None
         self._selected_roots = set()
+        self._alias_stamp = None
+        self._aliases = {}
 
     @staticmethod
     def bird(*arguments):
@@ -138,6 +170,38 @@ class RouteManager:
         self.policy()
         return match_domain(domain, self._selected_roots)
 
+    def aliases(self):
+        try:
+            stat = self.alias_file.stat()
+        except FileNotFoundError:
+            self._alias_stamp = None
+            self._aliases = {}
+            return self._aliases
+        stamp = (stat.st_mtime_ns, stat.st_size)
+        if self._alias_stamp != stamp:
+            self._aliases = json.loads(self.alias_file.read_text(encoding="utf-8"))
+            self._alias_stamp = stamp
+        return self._aliases
+
+    def origins(self, domain, aliases, now):
+        self.policy()
+        origins = {domain} if match_domain(domain, self._selected_roots) else set()
+        origins.update(origin for origin, expiry in aliases.get(domain, {}).items()
+                       if expiry > now and match_domain(origin, self._selected_roots))
+        return origins
+
+    def prune_aliases(self, aliases, now):
+        self.policy()
+        kept = {name: {origin: expiry for origin, expiry in origins.items()
+                       if expiry > now and match_domain(origin, self._selected_roots)}
+                for name, origins in aliases.items()}
+        return {name: origins for name, origins in kept.items() if origins}
+
+    def save_aliases(self, aliases):
+        if aliases != self.aliases():
+            write_json(self.alias_file, aliases)
+            self._alias_stamp = None
+
     def _commit(self, policy, leases, now, install=False, configure=True):
         includes, excludes = lease_sets(policy, leases, now)
         signature = (policy["generation"], frozenset(includes), frozenset(excludes))
@@ -188,28 +252,42 @@ class RouteManager:
         with self.locked():
             self._commit(policy, self.leases(), now, install=True, configure=configure)
 
-    def observe(self, domain, addresses, now=None):
+    def observe(self, domain, addresses, now=None, targets=()):
         now = time.time() if now is None else now
         domain = domain_key(domain)
-        if not self.selected(domain) or not addresses:
+        if not addresses and not targets:
+            return
+        if not self.origins(domain, self.aliases(), now):
             return
         with self.locked():
             policy = self.policy()
+            aliases = self.prune_aliases(self.aliases(), now)
+            origins = self.origins(domain, aliases, now)
+            if not origins:
+                return
             leases = self.leases()
             leases = {name: {ip: expiry for ip, expiry in items.items() if expiry > now}
                       for name, items in leases.items()}
             leases = {name: items for name, items in leases.items() if items}
-            current = leases.setdefault(domain, {})
-            for address, ttl in addresses:
-                ip = ipaddress.IPv4Address(address)
-                if ip.is_global:
-                    # A zero-TTL reply may be used immediately; retain a short
-                    # grace period for connection setup and BGP propagation.
-                    expiry = now + max(1, ttl) + int(os.environ.get("DNS_ROUTE_GRACE", "30"))
-                    current[str(ip)] = max(current.get(str(ip), 0), expiry)
+            grace = int(os.environ.get("DNS_ROUTE_GRACE", "30"))
+            for origin in origins:
+                current = leases.setdefault(origin, {})
+                for address, ttl in addresses:
+                    ip = ipaddress.IPv4Address(address)
+                    if ip.is_global:
+                        # A zero-TTL reply may be used immediately; retain a
+                        # grace period for connection setup and BGP propagation.
+                        expiry = now + max(1, ttl) + grace
+                        current[str(ip)] = max(current.get(str(ip), 0), expiry)
+                for target, ttl in targets:
+                    current_aliases = aliases.setdefault(domain_key(target), {})
+                    current_aliases[origin] = max(current_aliases.get(origin, 0), now + max(1, ttl) + grace)
             if sum(len(items) for items in leases.values()) > 50000:
                 raise RuntimeError("DNS route lease limit exceeded")
+            if sum(len(items) for items in aliases.values()) > 50000:
+                raise RuntimeError("DNS alias limit exceeded")
             self._commit(policy, leases, now)
+            self.save_aliases(aliases)
 
     def refresh(self, now=None):
         now = time.time() if now is None else now
@@ -219,6 +297,7 @@ class RouteManager:
                       for name, items in self.leases().items()}
             leases = {name: items for name, items in leases.items() if items}
             self._commit(policy, leases, now)
+            self.save_aliases(self.prune_aliases(self.aliases(), now))
 
     def check_bird(self):
         # All configure commands, including probes, participate in the apply

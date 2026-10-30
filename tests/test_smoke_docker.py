@@ -211,7 +211,10 @@ class DockerSmokeTests(unittest.TestCase):
 
         def answer(query, tcp=False):
             result = dns.message.make_response(query)
-            result.answer.append(dns.rrset.from_text(query.question[0].name, 60, "IN", "A", answer_address[0]))
+            if query.question[0].name.to_text() == "alias.example.test.":
+                result.answer.append(dns.rrset.from_text(query.question[0].name, 60, "IN", "CNAME", "edge.other.test."))
+            else:
+                result.answer.append(dns.rrset.from_text(query.question[0].name, 60, "IN", "A", answer_address[0]))
             return result
 
         upstream.exchange = answer
@@ -255,6 +258,18 @@ class DockerSmokeTests(unittest.TestCase):
             # A full reload must preserve the exact addresses already served.
             self.compose("exec", "-T", "bird", "/reload-routes.sh")
             self.assertIn("1.1.1.2/32", (self.generated_dir / "routes.conf").read_text())
+            # A separate lookup outside the include suffix must inherit its
+            # original domain's scope, even after restarting the DNS process.
+            alias_query = dns.message.make_query("alias.example.test", "A")
+            alias_reply = dns.query.udp(alias_query, "127.0.0.1", port=self.dns_port, timeout=5)
+            self.assertEqual(alias_reply.answer[0].rdtype, dns.rdatatype.CNAME)
+            self.compose("restart", "dns-proxy")
+            self.wait_until(ready_without_errors, 20, "DNS proxy did not recover after restart")
+            answer_address[0] = "1.0.0.1"
+            target_query = dns.message.make_query("edge.other.test", "A")
+            target_reply = dns.query.tcp(target_query, "127.0.0.1", port=self.dns_port, timeout=5)
+            self.assertEqual(target_reply.answer[0][0].address, "1.0.0.1")
+            self.assertIn("1.0.0.1/32", (self.generated_dir / "routes.conf").read_text())
             self.compose("stop", "bird")
             with self.assertRaises(urllib.error.HTTPError) as failed:
                 ready()
