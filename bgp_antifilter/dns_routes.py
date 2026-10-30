@@ -74,6 +74,7 @@ class RouteManager:
         self._policy_stamp = None
         self._policy = None
         self._signature = None
+        self._routes_stamp = None
         self._selected_roots = set()
 
     @staticmethod
@@ -140,7 +141,9 @@ class RouteManager:
     def _commit(self, policy, leases, now, install=False, configure=True):
         includes, excludes = lease_sets(policy, leases, now)
         signature = (policy["generation"], frozenset(includes), frozenset(excludes))
-        if not install and self._signature == signature:
+        stat = self.routes.stat() if self.routes.exists() else None
+        stamp = (stat.st_mtime_ns, stat.st_size) if stat else None
+        if not install and self._signature == signature and self._routes_stamp == stamp:
             write_json(self.state_file, leases)
             return
         # Compare with the active file, not only the old leases: expired entries
@@ -177,6 +180,8 @@ class RouteManager:
         else:
             write_json(self.state_file, leases)
         self._signature = signature
+        stat = self.routes.stat()
+        self._routes_stamp = (stat.st_mtime_ns, stat.st_size)
 
     def install(self, policy, configure=True, now=None):
         now = time.time() if now is None else now
@@ -214,6 +219,21 @@ class RouteManager:
                       for name, items in self.leases().items()}
             leases = {name: items for name, items in leases.items() if items}
             self._commit(policy, leases, now)
+
+    def check_bird(self):
+        # All configure commands, including probes, participate in the apply
+        # lock. A readiness probe must never apply another writer's candidate.
+        with self.locked():
+            # Recover a candidate left on disk by a killed writer before
+            # probing configure; only committed policy and leases are trusted.
+            self._commit(self.policy(), self.leases(), time.time())
+            self.bird_command("configure")
+            if "up and running" not in self.bird_command("show", "status"):
+                raise RuntimeError("BIRD is not ready")
+            if os.environ.get("HEALTHCHECK_REQUIRE_BGP", "1") == "1":
+                protocol = os.environ.get("BGP_PROTOCOL", "mikrotik")
+                if "Established" not in self.bird_command("show", "protocols", protocol):
+                    raise RuntimeError("BGP is not established")
 
 
 def main():

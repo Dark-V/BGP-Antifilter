@@ -132,6 +132,21 @@ class RouteManagerTests(unittest.TestCase):
         with other.locked():
             pass
 
+    def test_readiness_rejects_down_bgp_and_bird(self):
+        self.bird.side_effect = ["Reconfigured", "BIRD up and running", "Idle"]
+        with mock.patch.dict(os.environ, {"HEALTHCHECK_REQUIRE_BGP": "1"}):
+            with self.assertRaisesRegex(RuntimeError, "BGP is not established"):
+                self.manager.check_bird()
+        self.bird.side_effect = ["Reconfigured", "unavailable"]
+        with self.assertRaisesRegex(RuntimeError, "BIRD is not ready"):
+            self.manager.check_bird()
+
+    def test_refresh_recovers_uncommitted_route_file_after_writer_crash(self):
+        self.manager.routes.write_text("    route 8.8.8.8/32 blackhole;\n")
+        self.manager.refresh(now=101)
+        self.assertFalse(self.advertised("8.8.8.8"))
+        self.assertTrue(self.advertised("93.184.216.34"))
+
 
 class WireTests(unittest.TestCase):
     def setUp(self):
@@ -229,8 +244,7 @@ class SocketIntegrationTests(unittest.TestCase):
         self.assertEqual(self.manager.observe.call_count, 2)
 
     def test_health_checks_real_listeners_and_bird_failure(self):
-        server = dns_proxy.ThreadingHTTPServer(("127.0.0.1", 0), dns_proxy.ReadyHandler)
-        server.proxy = self.proxy
+        server = dns_proxy.ReadyServer(("127.0.0.1", 0), dns_proxy.ReadyHandler, self.proxy)
         server.dns_address = self.address
         server.check_lock = threading.Lock()
         self.start_server(server)

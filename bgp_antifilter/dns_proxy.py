@@ -1,11 +1,10 @@
 """DNS forwarder which applies observed IPv4 routes before returning answers."""
 from concurrent.futures import ThreadPoolExecutor
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler, HTTPServer
 import ipaddress
 import json
 import logging
 import os
-import socket
 import socketserver
 import struct
 import threading
@@ -157,6 +156,10 @@ class TCPServer(BoundedServer, socketserver.TCPServer):
     pass
 
 
+class ReadyServer(BoundedServer, HTTPServer):
+    pass
+
+
 class UDPHandler(socketserver.BaseRequestHandler):
     def handle(self):
         wire, connection = self.request
@@ -182,6 +185,8 @@ class TCPHandler(socketserver.BaseRequestHandler):
 
 
 class ReadyHandler(BaseHTTPRequestHandler):
+    timeout = 5
+
     def do_GET(self):
         if not self.server.proxy.permits(self.client_address[0]):
             self.send_error(403)
@@ -192,14 +197,7 @@ class ReadyHandler(BaseHTTPRequestHandler):
         try:
             with self.server.check_lock:
                 self.server.proxy.manager.refresh()
-                self.server.proxy.manager.bird_command("configure")
-                status = self.server.proxy.manager.bird_command("show", "status")
-                if "up and running" not in status:
-                    raise RuntimeError("BIRD is not ready")
-                if os.environ.get("HEALTHCHECK_REQUIRE_BGP", "1") == "1":
-                    protocol = os.environ.get("BGP_PROTOCOL", "mikrotik")
-                    if "Established" not in self.server.proxy.manager.bird_command("show", "protocols", protocol):
-                        raise RuntimeError("BGP is not established")
+                self.server.proxy.manager.check_bird()
                 # Exercise both actual listeners and upstream transports.
                 query = dns.message.make_query(os.environ.get("DNS_HEALTH_DOMAIN", "example.org"), "A")
                 for transport in (dns.query.udp, dns.query.tcp):
@@ -230,7 +228,7 @@ def main():
     port = int(os.environ.get("DNS_PROXY_PORT", "53"))
     upstream = os.environ.get("ADGUARD_DNS", "192.168.88.16")
     upstream_port = int(os.environ.get("ADGUARD_DNS_PORT", "53"))
-    if bind in ("0.0.0.0", upstream) and port == upstream_port:
+    if bind == "0.0.0.0" or (bind == upstream and port == upstream_port):
         raise ValueError("Bind DNS proxy to its own specific address, different from AdGuard")
     if int(os.environ.get("DNS_ROUTE_GRACE", "30")) < 0:
         raise ValueError("DNS_ROUTE_GRACE must not be negative")
@@ -239,8 +237,7 @@ def main():
     proxy = Proxy(RouteManager(), upstream, port=upstream_port, allowed=allowed)
     udp = UDPServer((bind, port), UDPHandler, proxy)
     tcp = TCPServer((bind, port), TCPHandler, proxy)
-    ready = ThreadingHTTPServer((bind, int(os.environ.get("DNS_PROXY_HEALTH_PORT", "8053"))), ReadyHandler)
-    ready.proxy = proxy
+    ready = ReadyServer((bind, int(os.environ.get("DNS_PROXY_HEALTH_PORT", "8053"))), ReadyHandler, proxy)
     ready.dns_address = udp.server_address
     ready.check_lock = threading.Lock()
     for server in (udp, tcp, ready):
