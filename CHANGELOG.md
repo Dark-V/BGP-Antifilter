@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+- Added an optional UDP/TCP DNS proxy for AdGuard: learn the IPv4 addresses
+  actually served to clients, follow CNAME and HTTPS/SVCB IPv4 hints, retain
+  concurrent answers by TTL, and preserve domain/IP exclusion precedence.
+- Added transactional live route application with BIRD rollback, a separate
+  short apply lock, and persistence across full reloads and restarts.
+- Added end-to-end readiness checks and a RouterOS script generator for
+  explicit proxy/direct-AdGuard failover with recovery hysteresis.
+- Added Compose DNS profile, setup documentation, wire/socket tests and
+  a real-BIRD Docker integration test.
+
 ## 0.4.4 - 2026-07-07
 
 - Added a public `/status.json` endpoint without authentication that exposes only compact operational counters: generated route count, time since the last generation, generation duration, and admin-server uptime.

@@ -1,4 +1,13 @@
 # BGP Antifilter
+
+Optional AdGuard integration learns IPv4 routes from the exact DNS answers
+served to clients. Enable `DNS_PROXY_ENABLED=1` and `COMPOSE_PROFILES=dns`,
+set `ADGUARD_DNS`, then run `docker compose up -d --build`.
+Generate RouterOS automatic direct-DNS failover with
+`python3 scripts/mikrotik-dns-failover.py --proxy YOUR_BIRD_IP --output generated/failover.rsc`.
+See the [setup and verification guide (Russian)](docs/adguard-dns.md).
+Install `requirements.txt` before running Python tests.
+
 ![Python](https://img.shields.io/badge/python-3.x-blue)
 ![Debian](https://img.shields.io/badge/debian-bookworm-a81d33)
 ![BIRD](https://img.shields.io/badge/BIRD-2.x-green)

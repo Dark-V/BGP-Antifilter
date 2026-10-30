@@ -183,6 +183,9 @@ update_routes() {
     fi
 
     echo "Routes prepared before BIRD startup"
+    if [ "${DNS_PROXY_ENABLED:-0}" = "1" ]; then
+      python3 -m bgp_antifilter.dns_routes "$ROUTES.dns.json" --no-configure
+    fi
   else
     echo "Route updater failed" >&2
     return 1
@@ -324,6 +327,9 @@ STARTUP_SNAPSHOT_AGE_SECONDS="$(printf '%s\n' "$startup_snapshot_values" | sed -
 if [ "$startup_mode" = "background-refresh" ]; then
   echo "Starting BIRD with existing route snapshot while refreshing routes in background"
   cp "$LAST_GOOD_ROUTES" "$ROUTES"
+  if [ "${DNS_PROXY_ENABLED:-0}" = "1" ] && [ -f /etc/bird/generated/dns-policy.json ]; then
+    python3 -m bgp_antifilter.dns_routes /etc/bird/generated/dns-policy.json --no-configure
+  fi
   GENERATION_ACTIVE=1
   GENERATION_KIND="startup"
   GENERATION_MESSAGE="Starting with previous routes while refreshing in background"

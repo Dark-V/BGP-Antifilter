@@ -667,7 +667,7 @@ def cleanup_paths(paths):
             pass
 
 
-def parse_and_build_routes(output, base_text, include_text, exclude_text, min_prefix_length, allow_broad_routes):
+def parse_and_build_routes(output, base_text, include_text, exclude_text, min_prefix_length, allow_broad_routes, dns_policy=None):
     tmp_dir = output.parent
     tmp_base = tmp_dir / ".routes-base.tmp"
     tmp_include = tmp_dir / ".routes-include.tmp"
@@ -692,6 +692,9 @@ def parse_and_build_routes(output, base_text, include_text, exclude_text, min_pr
 
         progress("building final route set", base=len(base), include=len(extra), exclude=len(exclude))
         networks, applied, route_stats = generate_routes.build_routes_with_stats(base, exclude, extra)
+        if dns_policy is not None:
+            dns_policy["routes"] = [str(network) for network in networks]
+            dns_policy["exclude_routes"] = [str(network) for network in exclude]
         routes = {
             "base": len(base),
             "include": len(extra),
@@ -708,7 +711,7 @@ def parse_and_build_routes(output, base_text, include_text, exclude_text, min_pr
         cleanup_paths(tmp_paths)
 
 
-def collect_sources(cache_dir, cache_max_age, include_google):
+def collect_sources(cache_dir, cache_max_age, include_google, dns_policy=None):
     now = int(time.time())
     list_files = env_paths(LIST_FILE_SPECS)
     require_all_url_sources = env_bool("REQUIRE_ALL_URL_SOURCES", default=False)
@@ -728,6 +731,9 @@ def collect_sources(cache_dir, cache_max_age, include_google):
     country_sources = read_list(list_files["countries"])
     exclude_domains = read_list(list_files["exclude-domains"])
     include_domains = read_list(list_files["include-domains"])
+    if dns_policy is not None:
+        dns_policy["include_domains"] = [name for value in include_domains if (name := normalize_domain_name(value))]
+        dns_policy["exclude_domains"] = [name for value in exclude_domains if (name := normalize_domain_name(value))]
     total_items = (
         len(url_sources)
         + len(domain_list_sources)
@@ -870,6 +876,8 @@ def collect_sources(cache_dir, cache_max_age, include_google):
 
         if ok:
             domains, invalid_lines = parse_domain_list(text)
+            if dns_policy is not None:
+                dns_policy["include_domains"].extend(domains)
             record["domains"] = len(domains)
             record["invalid_lines"] = invalid_lines
             resolved_routes = []
@@ -1239,8 +1247,9 @@ def main(argv=None):
         "invalid": 0,
     }
 
+    dns_policy = {"generation": time.time_ns()} if env_bool("DNS_PROXY_ENABLED", default=False) else None
     source_failed, sources, errors, base_text, include_text, exclude_text = collect_sources(
-        cache_dir, cache_max_age, include_google
+        cache_dir, cache_max_age, include_google, dns_policy=dns_policy
     )
 
     if args.check_sources:
@@ -1271,6 +1280,7 @@ def main(argv=None):
                 exclude_text,
                 args.min_prefix_length,
                 args.allow_broad_routes,
+                dns_policy=dns_policy,
             )
 
             if not networks:
@@ -1281,6 +1291,8 @@ def main(argv=None):
                 progress("writing generated routes", final=len(networks))
                 write_runtime_progress("writing-routes", "Writing generated routes", items_done=len(sources), items_total=len(sources))
                 write_routes(output, networks)
+                if dns_policy is not None:
+                    write_json(Path(str(output) + ".dns.json"), dns_policy)
         except RuntimeError as exc:
             record = {"kind": "routes", "name": "validation", "status": "failed", "error": str(exc)}
             errors.append(record)

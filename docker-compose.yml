@@ -22,6 +22,7 @@ services:
       BIRD_IP: "${BIRD_IP:-192.168.55.5}"
       ROUTER_ID: "${ROUTER_ID:-192.168.55.5}"
       BGP_COMMUNITY: "${BGP_COMMUNITY:-65432,500}"
+      DNS_PROXY_ENABLED: "${DNS_PROXY_ENABLED:-0}"
       LISTS_FILE: /etc/bird/generated/config/lists.txt
       DOMAIN_LIST_URLS_FILE: /etc/bird/generated/config/domain-list-urls.txt
       INCLUDE_ASNS_FILE: /etc/bird/generated/config/include-asns.txt
@@ -92,11 +93,12 @@ services:
       CONTAINER_LOG_FILE: /etc/bird/generated/container.log
       SETTINGS_FILE: /etc/bird/generated/settings.json
       SETTINGS_ENV_FILE: /etc/bird/generated/settings.env
+      DNS_PROXY_ENABLED: "${DNS_PROXY_ENABLED:-0}"
       WORKSPACE_DIR: /workspace
       ENV_FILE: /workspace/.env
       VERSION_FILE: /workspace/VERSION
       COMPOSE_FILE: /workspace/docker-compose.yml
-      UPDATER_COMPOSE_SERVICES: "bird admin"
+      UPDATER_COMPOSE_SERVICES: "${UPDATER_COMPOSE_SERVICES:-bird admin}"
     depends_on:
       - bird
     healthcheck:
@@ -105,6 +107,39 @@ services:
       timeout: 5s
       start_period: 10s
       retries: 3
+
+  dns-proxy:
+    profiles: ["dns"]
+    image: "bgp-antifilter-bird:${BGP_ANTIFILTER_VERSION:-0.4.5}"
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile
+    entrypoint: ["/usr/bin/tini", "--", "python3", "-m", "bgp_antifilter.dns_proxy"]
+    network_mode: host
+    restart: unless-stopped
+    volumes:
+      - ./generated:/etc/bird/generated
+      - bird-run:/run/bird
+    environment:
+      DNS_PROXY_BIND: "${DNS_PROXY_BIND:-${BIRD_IP:-192.168.55.5}}"
+      DNS_PROXY_ENABLED: "${DNS_PROXY_ENABLED:-0}"
+      DNS_PROXY_PORT: "${DNS_PROXY_PORT:-53}"
+      DNS_PROXY_HEALTH_PORT: "${DNS_PROXY_HEALTH_PORT:-8053}"
+      DNS_PROXY_ALLOWED_CLIENTS: "${DNS_PROXY_ALLOWED_CLIENTS:-${MT_IP:-192.168.55.1}/32}"
+      ADGUARD_DNS: "${ADGUARD_DNS:-192.168.88.16}"
+      ADGUARD_DNS_PORT: "${ADGUARD_DNS_PORT:-53}"
+      DNS_ROUTE_GRACE: "${DNS_ROUTE_GRACE:-30}"
+      DNS_HEALTH_DOMAIN: "${DNS_HEALTH_DOMAIN:-example.org}"
+      BGP_PROTOCOL: "${BGP_PROTOCOL:-mikrotik}"
+      HEALTHCHECK_REQUIRE_BGP: "${HEALTHCHECK_REQUIRE_BGP:-1}"
+    depends_on:
+      - bird
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS --max-time 10 http://$${DNS_PROXY_BIND}:$${DNS_PROXY_HEALTH_PORT}/ready >/dev/null"]
+      interval: 10s
+      timeout: 11s
+      start_period: 15s
+      retries: 2
 
 volumes:
   bird-run:
