@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main
+      - feature/portainer-stack
     tags:
       - "v*"
   workflow_dispatch:
@@ -44,6 +45,7 @@ jobs:
           images: ${{ env.IMAGE_NAME }}
           tags: |
             type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+            type=raw,value=portainer
             type=sha,prefix=sha-
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}

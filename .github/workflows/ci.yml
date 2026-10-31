@@ -29,6 +29,7 @@ jobs:
         run: |
           docker compose --env-file .env.example config
           docker compose --env-file .env.example --profile dns config
+          ADMIN_PASSWORD=ci-test docker compose -f deploy/portainer-stack.yml config --quiet
 
       - name: Build canonical Docker image
         run: docker compose --env-file .env.example build

@@ -131,7 +131,7 @@ def write_settings_application(**updates):
 def settings_compose_context():
     # Compose runs inside admin, while bind-mount sources belong to the host.
     # Resolve the host project directory and name from this container's labels.
-    result = run_command(["docker", "inspect", socket.gethostname()])
+    result = run_command(["docker", "inspect", os.environ.get("ADMIN_CONTAINER_NAME") or socket.gethostname()])
     if not result.get("ok"):
         raise RuntimeError(result.get("stderr") or "Cannot inspect the admin container")
     container = json.loads(result["stdout"])[0]
