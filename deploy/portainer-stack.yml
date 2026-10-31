@@ -7,9 +7,9 @@ x-image: &image "${BGP_ANTIFILTER_IMAGE:-ghcr.io/dark-v/bgp-antifilter:portainer
 x-environment: &environment
   BGP_ANTIFILTER_IMAGE: *image
   PORTAINER_MANAGED: "1"
-  BGP_DATA_VOLUME: "${BGP_DATA_VOLUME:-}"
+  BGP_DATA_VOLUME: "${BGP_DATA_VOLUME:-${COMPOSE_PROJECT_NAME:-bgp-antifilter}_generated}"
   BGP_DATA_EXTERNAL: "${BGP_DATA_EXTERNAL:-false}"
-  BGP_RUN_VOLUME: "${BGP_RUN_VOLUME:-}"
+  BGP_RUN_VOLUME: "${BGP_RUN_VOLUME:-${COMPOSE_PROJECT_NAME:-bgp-antifilter}_bird-run}"
   BGP_RUN_EXTERNAL: "${BGP_RUN_EXTERNAL:-false}"
   MY_AS: "${MY_AS:-64500}"
   MT_AS: "${MT_AS:-65455}"
@@ -126,8 +126,8 @@ services:
 
 volumes:
   generated:
-    name: "${BGP_DATA_VOLUME:-}"
+    name: "${BGP_DATA_VOLUME:-${COMPOSE_PROJECT_NAME:-bgp-antifilter}_generated}"
     external: ${BGP_DATA_EXTERNAL:-false}
   bird-run:
-    name: "${BGP_RUN_VOLUME:-}"
+    name: "${BGP_RUN_VOLUME:-${COMPOSE_PROJECT_NAME:-bgp-antifilter}_bird-run}"
     external: ${BGP_RUN_EXTERNAL:-false}

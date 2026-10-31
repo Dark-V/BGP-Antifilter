@@ -364,7 +364,9 @@ class DockerSmokeTests(unittest.TestCase):
             self.compose("exec", "-T", "dns-proxy", "python3", "-m", "bgp_antifilter.dns_settings")
             self.assertEqual(self.compose("exec", "-T", "bird", "python3", "-c",
                                          "from pathlib import Path; print(Path('/etc/bird/generated/dns-cache.sqlite3').exists())").stdout.strip(), "True")
-        except Exception:
+        except Exception as exc:
+            if isinstance(exc, subprocess.CalledProcessError):
+                print(exc.stdout, exc.stderr)
             print(self.compose("logs", "dns-proxy", check=False).stdout[-4000:])
             print(self.compose("exec", "-T", "admin", "python3", "-c",
                                "from pathlib import Path; p=Path('/etc/bird/generated'); "
