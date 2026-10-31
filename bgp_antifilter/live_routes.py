@@ -1,5 +1,7 @@
 """A bounded DNS observation queue, durable TTL state, and incremental BGP RIB."""
 from collections import Counter
+from concurrent.futures import Future
+from dataclasses import dataclass
 import ipaddress
 import json
 import logging
@@ -10,11 +12,17 @@ import sqlite3
 import threading
 import time
 
-from .bgp_feed import BGPFeed
+from .bgp_feed import BGPFeed, SYNC_PREFIX
 from .dns_routes import RouteManager, atomic_write, domain_key, match_domain, write_json
 
 
 LOG = logging.getLogger("dns-routes")
+
+
+@dataclass(frozen=True)
+class ObservationReceipt:
+    revision: int
+    expected: dict[str, bool]
 
 
 class PrefixSet:
@@ -108,7 +116,8 @@ class LiveRoutes:
         self.directory = Path(directory or os.environ.get("GENERATED_DIR", "/etc/bird/generated"))
         self.directory.mkdir(parents=True, exist_ok=True)
         self.publisher = publisher or BGPFeed(int(os.environ.get("MY_AS", "64500")),
-                                             port=int(os.environ.get("DNS_BGP_PORT", "1179")))
+                                             port=int(os.environ.get("DNS_BGP_PORT", "1179")),
+                                             sync_marker=os.environ.get("DNS_SYNC_MODE", "async") == "bird")
         self.queue = queue.Queue(maxsize=capacity)
         self.weight_lock = threading.Lock()
         self.pending_weight = 0
@@ -131,23 +140,30 @@ class LiveRoutes:
         self.thread = threading.Thread(target=self._run, name="dns-route-worker", daemon=True)
         self.thread.start()
 
-    def observe(self, domain, addresses, now=None, targets=()):
+    def observe(self, domain, addresses, now=None, targets=(), receipt=False, reply_budget=0):
         """Non-blocking admission only: no file, BGP, or policy work here."""
+        ticket = Future() if receipt else None
         weight = len(addresses) + len(targets)
         with self.weight_lock:
             if self.pending_weight + weight > 16384:
                 self.dropped += 1
                 self.drop_until = time.monotonic() + 5
+                if ticket is not None:
+                    ticket.set_exception(RuntimeError("DNS observation queue overloaded"))
+                    return ticket
                 return False
             self.pending_weight += weight
         try:
-            self.queue.put_nowait((domain, tuple(addresses), tuple(targets), time.time() if now is None else now, weight))
-            return True
+            self.queue.put_nowait((domain, tuple(addresses), tuple(targets), time.time() if now is None else now, weight, ticket, reply_budget))
+            return ticket if ticket is not None else True
         except queue.Full:
             with self.weight_lock:
                 self.pending_weight -= weight
             self.dropped += 1
             self.drop_until = time.monotonic() + 5
+            if ticket is not None:
+                ticket.set_exception(RuntimeError("DNS observation queue overloaded"))
+                return ticket
             return False
 
     def flush(self, timeout=5):
@@ -210,15 +226,19 @@ class LiveRoutes:
         self.lease_dirty[domain, address] = current[address]
 
     def _observe(self, event):
-        domain, addresses, targets, received, _ = event
+        domain, addresses, targets, received, _, ticket, reply_budget = event
         if self.policy is None:
-            return
+            if ticket is not None:
+                raise RuntimeError("Waiting for initial route policy")
+            return False
         domain = domain_key(domain)
         now = time.time()
         origins = {domain} if self._classify(domain) is not None else set()
         origins.update(origin for origin, expiry in self.aliases.get(domain, {}).items()
                        if expiry > now and self._classify(origin) is not None)
-        grace = int(os.environ.get("DNS_ROUTE_GRACE", "30"))
+        # Client cache lifetime begins after the gated reply. Keep both IPs
+        # and aliases alive for the entire possible reply delay as well.
+        grace = int(os.environ.get("DNS_ROUTE_GRACE", "30")) + reply_budget
         for origin in origins:
             for address, ttl in addresses:
                 ip = ipaddress.IPv4Address(address)
@@ -238,6 +258,7 @@ class LiveRoutes:
                     self.alias_count += 1
                 current[origin] = max(current.get(origin, 0), expiry)
                 self.alias_dirty[target, origin] = current[origin]
+        return bool(origins)
 
     def _expire(self, now):
         for domain, items in list(self.leases.items()):
@@ -282,6 +303,8 @@ class LiveRoutes:
 
     def _new_policy(self, policy):
         index = IncrementalRoutes(policy)
+        if getattr(self.publisher, "sync_marker", False) and index.baseline.contains(ipaddress.IPv4Network(SYNC_PREFIX)):
+            raise ValueError(f"{SYNC_PREFIX} is reserved for DNS/BIRD synchronization")
         includes, excludes = set(policy["include_domains"]), set(policy["exclude_domains"])
         included, excluded = Counter(), Counter()
         now = time.time()
@@ -398,12 +421,28 @@ class LiveRoutes:
                         if self.policy is not None and now - last_expire >= 0.5:
                             self._expire(now)
                             last_expire = now
-                        for event in batch:
-                            self._observe(event)
+                        tracked = [self._observe(event) for event in batch]
                         self._persist()
+                        # Resolve each receipt only after its durable state and
+                        # delta are accepted. Snapshot the effective policy of
+                        # this batch, including shared-IP exclusion precedence.
+                        revision = self.publisher.checkpoint() if any(event[5] is not None for event in batch) else 0
+                        for event, selected in zip(batch, tracked):
+                            ticket = event[5]
+                            if ticket is not None:
+                                expected = {}
+                                if selected:
+                                    for value, _ in event[1]:
+                                        ip = ipaddress.IPv4Address(value)
+                                        if ip.is_global:
+                                            expected[str(ip)] = self.index.cover.find(ip) is not None
+                                ticket.set_result(ObservationReceipt(revision, expected))
                         self.error = ""
                     except Exception as exc:
                         self.error = str(exc)
+                        for event in batch:
+                            if event[5] is not None and not event[5].done():
+                                event[5].set_exception(exc)
                         LOG.warning("Live route update failed: %s", exc)
                         self.stop.wait(0.1)
                     finally:

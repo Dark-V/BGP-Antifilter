@@ -146,6 +146,9 @@ class DockerSmokeTests(unittest.TestCase):
                   MY_AS: "64500"
                   DNS_BGP_PORT: "{getattr(self, 'bgp_feed_port', 1179)}"
                   DNS_ROUTE_GRACE: "0"
+                  DNS_SYNC_MODE: "{getattr(self, 'dns_sync_mode', 'async')}"
+                  DNS_SYNC_TIMEOUT: "1"
+                  DNS_SYNC_ON_TIMEOUT: "{getattr(self, 'dns_sync_on_timeout', 'servfail')}"
                   DNS_PROXY_BIND: "127.0.0.1"
                   DNS_PROXY_PORT: "{getattr(self, 'dns_port', 15353)}"
                   DNS_PROXY_HEALTH_PORT: "{getattr(self, 'dns_health_port', 18053)}"
@@ -322,6 +325,46 @@ class DockerSmokeTests(unittest.TestCase):
             self.compose("start", "bird")
             self.wait_until(ready_without_errors, 30, "Local BGP feed did not reconnect after BIRD restart")
             self.wait_until(lambda: route_present("1.1.1.3"), 5, "IP learned during BIRD outage was not replayed")
+            strict_configure_time = reconfigured_at()
+            # Enable BIRD confirmation. The DNS response itself must now be
+            # gated on the real RIB, without a subsequent polling allowance.
+            self.dns_sync_mode = "bird"
+            self.compose_file.write_text(self.compose_yaml(), encoding="utf-8")
+            self.compose("up", "-d", "--no-deps", "--force-recreate", "dns-proxy")
+            self.wait_until(ready_without_errors, 20, "Synchronous DNS proxy did not recover")
+            answer_address[0] = "1.1.1.4"
+            reply = dns.query.udp(query, "127.0.0.1", port=self.dns_port, timeout=5)
+            self.assertEqual(reply.rcode(), dns.rcode.NOERROR)
+            self.assertEqual(reply.answer[0][0].address, "1.1.1.4")
+            self.assertTrue(route_present("1.1.1.4"), "DNS arrived before the route was installed in BIRD")
+            reply = dns.query.tcp(excluded, "127.0.0.1", port=self.dns_port, timeout=5)
+            self.assertEqual(reply.rcode(), dns.rcode.NOERROR)
+            self.assertFalse(route_present("93.184.216.34"), "DNS arrived before BIRD applied the exclusion")
+            exported = self.compose("exec", "-T", "bird", "birdc", "show", "route", "export", "mikrotik").stdout
+            self.assertNotIn("198.18.0.1/32", exported, "Local synchronization marker leaked to MikroTik export")
+            self.assertEqual(reconfigured_at(), strict_configure_time)
+            self.compose("stop", "bird")
+            answer_address[0] = "1.1.1.5"
+            reply = dns.query.udp(query, "127.0.0.1", port=self.dns_port, timeout=5)
+            self.assertEqual(reply.rcode(), dns.rcode.SERVFAIL, "Strict synchronization leaked a new IP during BIRD outage")
+            self.assertFalse(reply.answer)
+            unrelated = dns.message.make_query("unrelated.test", "A")
+            reply = dns.query.tcp(unrelated, "127.0.0.1", port=self.dns_port, timeout=5)
+            self.assertEqual(reply.rcode(), dns.rcode.NOERROR, "Unselected domain unnecessarily waited for BGP")
+            self.dns_sync_on_timeout = "forward"
+            self.compose_file.write_text(self.compose_yaml(), encoding="utf-8")
+            self.compose("up", "-d", "--no-deps", "--force-recreate", "dns-proxy")
+
+            def forwarding_after_timeout():
+                try:
+                    return dns.query.tcp(query, "127.0.0.1", port=self.dns_port, timeout=3).rcode() == dns.rcode.NOERROR
+                except (OSError, dns.exception.DNSException):
+                    return False
+
+            self.wait_until(forwarding_after_timeout, 10, "Configured forward fallback did not return AdGuard's answer")
+            self.compose("start", "bird")
+            self.wait_until(ready_without_errors, 30, "Synchronous source did not reconnect")
+            self.assertTrue(route_present("1.1.1.5"), "Failed/forwarded sync observation was lost")
         finally:
             for server in (udp, tcp):
                 server.shutdown()

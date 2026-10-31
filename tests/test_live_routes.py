@@ -40,6 +40,7 @@ class Publisher:
         self.block = False
         self.entered = threading.Event()
         self.release = threading.Event()
+        self.revision = 0
 
     def update(self, added, removed):
         if self.block:
@@ -48,6 +49,13 @@ class Publisher:
         self.routes.difference_update(removed)
         self.routes.update(added)
         self.changes.append((set(added), set(removed)))
+        self.revision += bool(added or removed)
+
+    def checkpoint(self):
+        return self.revision
+
+    def wait_sent(self, revision, timeout):
+        assert revision <= self.revision
 
     def ready(self):
         return True

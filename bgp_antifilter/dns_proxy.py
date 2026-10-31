@@ -1,4 +1,4 @@
-"""DNS forwarder which applies observed IPv4 routes before returning answers."""
+"""DNS forwarder with background routes and optional bounded reply gates."""
 from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, HTTPServer
 import ipaddress
@@ -20,6 +20,7 @@ import dns.rdatatype
 
 from .dns_routes import domain_key
 from .live_routes import LiveRoutes
+from .dns_sync import ReplyGate, SyncOptions
 
 
 LOG = logging.getLogger("dns-proxy")
@@ -89,13 +90,15 @@ def receive_exact(connection, size):
 
 
 class Proxy:
-    def __init__(self, manager, upstream, port=53, timeout=2.0, allowed=None):
+    def __init__(self, manager, upstream, port=53, timeout=2.0, allowed=None, sync=None):
         self.manager = manager
         self.upstream = str(ipaddress.IPv4Address(upstream))
         self.port = port
         self.timeout = timeout
         self.allowed = [ipaddress.ip_network(value, strict=False) for value in (allowed or ["127.0.0.1/32"])]
         self.last_error = ""
+        self.sync = sync or SyncOptions.from_env()
+        self.gate = ReplyGate(manager, self.sync)
 
     def permits(self, address):
         ip = ipaddress.ip_address(address)
@@ -127,15 +130,16 @@ class Proxy:
                 addresses = answer_addresses(response)
                 targets = answer_targets(response)
                 try:
-                    # Queue admission only. Route failures/overload affect
-                    # readiness, never turn a valid AdGuard answer into SERVFAIL.
-                    if targets:
-                        self.manager.observe(domain_key(request.question[0].name.to_text()), addresses, targets=targets)
-                    elif addresses:
-                        self.manager.observe(domain_key(request.question[0].name.to_text()), addresses)
+                    if targets or addresses:
+                        self.gate.observe(domain_key(request.question[0].name.to_text()), addresses, targets)
                 except Exception as exc:
                     self.last_error = str(exc)
-                    LOG.warning("Could not queue DNS observation: %s", exc)
+                    LOG.warning("DNS route observation/synchronization failed: %s", exc)
+                    if self.sync.mode != "async" and self.sync.on_timeout == "servfail":
+                        # Never leave new IPs/hints in the answer or additional
+                        # sections of a failed synchronization response.
+                        response = dns.message.make_response(request)
+                        response.set_rcode(dns.rcode.SERVFAIL)
             except Exception as exc:
                 self.last_error = str(exc)
                 LOG.warning("DNS request failed: %s", exc)
@@ -265,13 +269,15 @@ def main():
         raise ValueError("DNS_ROUTE_GRACE must not be negative")
     allowed = os.environ.get("DNS_PROXY_ALLOWED_CLIENTS", os.environ.get("MT_IP", "127.0.0.1") + "/32")
     allowed = allowed.replace(",", " ").split() + [bind + "/32", "127.0.0.1/32"]
-    proxy = Proxy(LiveRoutes(), upstream, port=upstream_port, allowed=allowed)
+    sync = SyncOptions.from_env()  # Validate before starting route/BGP workers.
+    proxy = Proxy(LiveRoutes(), upstream, port=upstream_port, allowed=allowed, sync=sync)
     udp = UDPServer((bind, port), UDPHandler, proxy)
     tcp = TCPServer((bind, port), TCPHandler, proxy)
     ready = ReadyServer((bind, int(os.environ.get("DNS_PROXY_HEALTH_PORT", "8053"))), ReadyHandler, proxy)
     ready.dns_address = udp.server_address
     ready.check_lock = threading.Lock()
-    LOG.info("DNS proxy %s:%s -> %s:%s", bind, port, upstream, upstream_port)
+    LOG.info("DNS proxy %s:%s -> %s:%s (sync=%s, timeout=%ss, on_timeout=%s)",
+             bind, port, upstream, upstream_port, sync.mode, sync.timeout, sync.on_timeout)
     try:
         serve((udp, tcp, ready), proxy.manager)
     except KeyboardInterrupt:

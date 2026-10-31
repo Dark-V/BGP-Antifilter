@@ -13,6 +13,8 @@ protocol device {
 ${ROUTE_SOURCE_PROTOCOL}
 
 filter export_to_mikrotik {
+    # The local DNS synchronization marker must never reach the router.
+    if proto = "dns_live" && net = 198.18.0.1/32 then reject;
     bgp_community.add((${BGP_COMMUNITY}));
     bgp_next_hop = BIRD_IP;
     accept;
