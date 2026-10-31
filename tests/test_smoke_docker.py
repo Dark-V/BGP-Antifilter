@@ -296,7 +296,7 @@ class DockerSmokeTests(unittest.TestCase):
                 nonlocal state
                 state = api("/api/settings").get("application", {})
                 return state and not state.get("active")
-            self.wait_until(finished, 120, "Embedded Portainer configuration did not apply")
+            self.wait_until(finished, 60, "Embedded Portainer configuration did not apply")
             self.assertTrue(state.get("ok"), state)
         try:
             if not published_image:
@@ -312,6 +312,8 @@ class DockerSmokeTests(unittest.TestCase):
             self.compose("up", "-d")
             self.wait_until(login, 30, "Packaged admin UI did not start")
             self.wait_until(lambda: not api("/api/status").get("runtime", {}).get("generation_active"), 30, "Packaged BIRD did not initialize")
+            self.wait_until(lambda: "up and running" in self.compose("exec", "-T", "bird", "birdc", "show", "status", check=False).stdout,
+                            30, "Packaged BIRD did not start")
             # No repository/host-directory mount is available in this stack.
             for service in ("bird", "dns-proxy", "admin"):
                 cid = self.compose("ps", "-q", service).stdout.strip()
@@ -337,7 +339,12 @@ class DockerSmokeTests(unittest.TestCase):
             self.assertEqual(self.compose("exec", "-T", "bird", "python3", "-c",
                                          "from pathlib import Path; print(Path('/etc/bird/generated/dns-cache.sqlite3').exists())").stdout.strip(), "True")
         except Exception:
-            print(self.compose("logs", "bird", "dns-proxy", "admin", check=False).stdout[-12000:])
+            print(self.compose("logs", "dns-proxy", check=False).stdout[-4000:])
+            print(self.compose("exec", "-T", "admin", "python3", "-c",
+                               "from pathlib import Path; p=Path('/etc/bird/generated'); "
+                               "[(print('FILE',n),print((p/n).read_text()[-12000:] if (p/n).exists() else 'MISSING')) "
+                               "for n in ['container.log','settings.env','dns-active.json','runtime.json','settings-apply.json','status.json']]",
+                               check=False).stdout)
             raise
         finally:
             for server in (udp, tcp):

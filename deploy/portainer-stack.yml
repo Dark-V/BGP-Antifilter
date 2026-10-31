@@ -18,7 +18,6 @@ x-environment: &environment
   HEALTHCHECK_FAIL_ON_DEGRADED: "0"
   ADMIN_ENABLED: "1"
   ADMIN_PORT: "${ADMIN_PORT:-8080}"
-  ADMIN_PASSWORD: "${ADMIN_PASSWORD:?Set ADMIN_PASSWORD in Portainer stack environment variables}"
   DNS_PROXY_ENABLED: "${DNS_PROXY_ENABLED:-1}"
   DNS_PROXY_BIND: "${DNS_PROXY_BIND:-}"
   DNS_PROXY_PORT: "${DNS_PROXY_PORT:-53}"
@@ -97,6 +96,7 @@ services:
       WORKSPACE_DIR: /opt/bgp-antifilter
       COMPOSE_FILE: /opt/bgp-antifilter/portainer-stack.yml
       ENV_FILE: /opt/bgp-antifilter/.env
+      ADMIN_PASSWORD: "${ADMIN_PASSWORD:?Set ADMIN_PASSWORD in Portainer stack environment variables}"
       VERSION_FILE: /VERSION
       ADMIN_CONTAINER_NAME: "${BGP_ADMIN_CONTAINER:-bgp-antifilter-admin}"
       BGP_ADMIN_CONTAINER: "${BGP_ADMIN_CONTAINER:-bgp-antifilter-admin}"
