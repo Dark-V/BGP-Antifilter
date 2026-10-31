@@ -2,28 +2,19 @@
 
 ## Unreleased
 
-- DNS answers now return immediately while a bounded background worker saves
-  observed IP/TTL and alias state in SQLite and sends incremental IPv4 BGP
-  announcements/withdrawals to BIRD over loopback, without `NET_ADMIN` or Linux
-  route changes. Live IP changes no longer rebuild the complete route file.
-- Scheduled source updates merge active observed IPs into the new policy and
-  snapshot. Added reconnection replay, read-only readiness, overload handling,
-  and regression/integration tests for asynchronous DNS and live BGP updates.
-
-- Added an optional UDP/TCP DNS proxy for AdGuard: learn the IPv4 addresses
-  actually served to clients, follow CNAME and HTTPS/SVCB IPv4 hints, retain
-  concurrent answers by TTL, and preserve domain/IP exclusion precedence.
-- Added transactional live route application with BIRD rollback, a separate
-  short apply lock, and persistence across full reloads and restarts.
-- Added end-to-end readiness checks and a RouterOS script generator for
-  explicit proxy/direct-AdGuard failover with recovery hysteresis.
-- Added Compose DNS profile, setup documentation, wire/socket tests and
-  a real-BIRD Docker integration test.
-- Fixed independent CNAME/address TTL handling and persisted alias scope for
-  separate CDN lookups; retained exclusion precedence across alias chains.
-- Replaced quadratic live route exclusion scans with an interval sweep,
-  rejected unauthorized peers before allocating workers, and made listener
-  failure terminate the process so Docker can restart it.
+- Added an optional AdGuard UDP/TCP DNS proxy that returns answers immediately
+  and places observations into a bounded background queue. Route failures and
+  overload degrade readiness while valid DNS answers continue to be served.
+- Persist observed IPv4/TTL and CNAME/HTTPS/SVCB alias state in SQLite WAL;
+  scheduled source updates merge active observations into the new snapshot.
+- Send incremental IPv4 announcements/withdrawals to BIRD over loopback iBGP,
+  without NET_ADMIN, Linux route changes or per-query birdc configure. A live
+  exclusion updates only its covering prefix; TTL renewals do not rebuild the RIB.
+- Restore durable state before opening the BGP session, replay routes after
+  reconnect, and preserve shared-address ownership across TTL expiry/full updates.
+- Added read-only readiness checks and a RouterOS script generator for explicit
+  proxy/direct-AdGuard failover with recovery hysteresis, plus setup documentation.
+- Added wire, persistence, overload, incremental-index, and real-BIRD Docker tests.
 
 ## 0.4.4 - 2026-07-07
 

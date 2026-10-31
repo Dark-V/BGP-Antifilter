@@ -247,7 +247,7 @@ class LiveRoutes:
                 del items[address]
                 self.lease_count -= 1
                 target = self._classify(domain)
-                if target is not None:
+                if target is not None and self.index is not None:
                     target[address] -= 1
                     if target[address] <= 0:
                         del target[address]
@@ -257,7 +257,7 @@ class LiveRoutes:
                 del self.leases[domain]
         for target, origins in list(self.aliases.items()):
             for origin, expiry in list(origins.items()):
-                if expiry <= now or self._classify(origin) is None:
+                if expiry <= now or (self.policy is not None and self._classify(origin) is None):
                     del origins[origin]
                     self.alias_count -= 1
                     self.alias_dirty[target, origin] = None
@@ -285,6 +285,10 @@ class LiveRoutes:
         includes, excludes = set(policy["include_domains"]), set(policy["exclude_domains"])
         included, excluded = Counter(), Counter()
         now = time.time()
+        # Remove expired owners using the old policy's counters before
+        # rebuilding them. Otherwise a later expiry would subtract twice and
+        # could withdraw an IP still owned by another live domain.
+        self._expire(now)
         for domain, addresses in self.leases.items():
             target = excluded if match_domain(domain, excludes) else included if match_domain(domain, includes) else None
             if target is not None:

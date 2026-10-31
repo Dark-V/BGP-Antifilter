@@ -150,6 +150,7 @@ class BGPFeed:
         self.pending = {}
         self.lock = threading.Lock()
         self.stop = threading.Event()
+        self.state_ready = threading.Event()
         self.connected = False
         self.sending = False
         self.error = "BGP feed has not connected"
@@ -164,6 +165,7 @@ class BGPFeed:
             for route in added:
                 self.routes.add(route)
                 self.pending[route] = True
+            self.state_ready.set()
 
     def ready(self):
         with self.lock:
@@ -218,6 +220,8 @@ class BGPFeed:
 
     def _run(self):
         while not self.stop.is_set():
+            if not self.state_ready.wait(0.1):
+                continue
             try:
                 with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as connection:
                     connection.settimeout(2)

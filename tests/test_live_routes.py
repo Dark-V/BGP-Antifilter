@@ -175,6 +175,30 @@ class LiveWorkerTests(unittest.TestCase):
         self.assertIn("1.1.1.1/32", other.routes)
         self.assertIn("1.0.0.1/32", other.routes)
 
+    def test_full_update_does_not_double_expire_shared_address_owner(self):
+        clock = [time.time()]
+        with mock.patch("bgp_antifilter.live_routes.time.time", side_effect=lambda: clock[0]):
+            self.worker.observe("old.example.test", [("1.1.1.1", 1)])
+            self.worker.observe("live.example.test", [("1.1.1.1", 60)])
+            self.worker.flush()
+            self.publisher.block = True
+            try:
+                self.worker.observe("other.example.test", [("1.0.0.1", 60)])
+                self.assertTrue(self.publisher.entered.wait(1))
+                dns_routes.write_json(self.root / "dns-policy.pending.json", policy(2))
+                clock[0] += 2
+            finally:
+                self.publisher.release.set()
+            wait_for(lambda: self.worker.policy["generation"] == 2)
+
+            def expired_row_removed():
+                with closing(sqlite3.connect(self.root / "dns-cache.sqlite3")) as db:
+                    return db.execute("SELECT count(*) FROM leases WHERE name='old.example.test'").fetchone()[0] == 0
+
+            wait_for(expired_row_removed)
+            self.assertEqual(self.worker.included["1.1.1.1"], 1)
+            self.assertIn("1.1.1.1/32", self.publisher.routes)
+
     def test_rejected_full_policy_keeps_committed_state(self):
         before = set(self.publisher.routes)
         candidate = policy(2)
@@ -230,6 +254,22 @@ def decode_prefixes(data):
 
 
 class BGPWireTests(unittest.TestCase):
+    def test_feed_waits_for_restored_state_before_opening_session(self):
+        with socket.socket() as listener:
+            listener.bind(("127.0.0.1", 0))
+            listener.listen()
+            listener.settimeout(0.1)
+            feed = bgp_feed.BGPFeed(64500, port=listener.getsockname()[1])
+            try:
+                with self.assertRaises(socket.timeout):
+                    listener.accept()
+                feed.update({"93.184.216.0/24"}, set())
+                listener.settimeout(2)
+                connection, _ = listener.accept()
+                connection.close()
+            finally:
+                feed.close()
+
     def test_update_and_withdraw_frames_round_trip_and_respect_size(self):
         values = [f"11.{i // 256}.{i % 256}.1/32" for i in range(3000)]
         for withdrawn in (False, True):

@@ -1,7 +1,7 @@
-"""Compose static routes and TTL leases from client DNS answers.
+"""Shared DNS policy helpers and the compatibility file-based route backend.
 
-The generation lock remains owned by reload-routes.sh.  This module uses a
-separate, short apply lock, so downloading lists never blocks client DNS.
+The live DNS service uses live_routes.py and loopback BGP. In DNS mode this
+module's CLI submits a full policy update to that background worker.
 """
 import argparse
 from contextlib import contextmanager
