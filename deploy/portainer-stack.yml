@@ -55,12 +55,12 @@ x-environment: &environment
   UPDATE_RUNTIME_FILE: /etc/bird/generated/update-runtime.json
   CONTAINER_LOG_FILE: /etc/bird/generated/container.log
   UPDATE_LOCK_DIR: /etc/bird/generated/update.lock
-  http_proxy: "${http_proxy:-${HTTP_PROXY:-}}"
-  https_proxy: "${https_proxy:-${HTTPS_PROXY:-}}"
-  HTTP_PROXY: "${HTTP_PROXY:-${http_proxy:-}}"
-  HTTPS_PROXY: "${HTTPS_PROXY:-${https_proxy:-}}"
-  no_proxy: "${no_proxy:-${NO_PROXY:-localhost,127.0.0.1,::1}}"
-  NO_PROXY: "${NO_PROXY:-${no_proxy:-localhost,127.0.0.1,::1}}"
+  http_proxy: "${HTTP_PROXY:-}"
+  https_proxy: "${HTTPS_PROXY:-}"
+  HTTP_PROXY: "${HTTP_PROXY:-}"
+  HTTPS_PROXY: "${HTTPS_PROXY:-}"
+  no_proxy: "${NO_PROXY:-localhost,127.0.0.1,::1}"
+  NO_PROXY: "${NO_PROXY:-localhost,127.0.0.1,::1}"
 
 x-service: &service
   image: *image
