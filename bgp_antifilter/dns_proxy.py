@@ -290,6 +290,7 @@ def serve(servers, manager, interval=5):
                 # Docker restart policies act on process exit, not merely on
                 # an unhealthy check. Do not leave a dead listener stranded.
                 raise RuntimeError("DNS proxy listener stopped unexpectedly")
+            manager.supervise()
             threading.Event().wait(interval)
             try:
                 manager.refresh()

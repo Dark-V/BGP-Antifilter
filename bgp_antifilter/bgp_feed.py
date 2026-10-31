@@ -168,6 +168,10 @@ class BGPFeed:
         with self.lock:
             return self.connected and not self.pending and not self.sending
 
+    def check_running(self):
+        if not self.thread.is_alive():
+            raise RuntimeError("Local BGP worker stopped")
+
     def _session(self, connection):
         connection.sendall(open_message(self.asn, self.router_id))
         kind, payload = receive_message(connection)

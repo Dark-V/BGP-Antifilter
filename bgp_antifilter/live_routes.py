@@ -171,6 +171,11 @@ class LiveRoutes:
         if time.monotonic() - self.last_progress > 3:
             raise RuntimeError("Live route worker is stalled")
 
+    def supervise(self):
+        if not self.thread.is_alive():
+            raise RuntimeError(self.error or "Live route worker stopped")
+        self.publisher.check_running()
+
     def check_bird(self):
         self.refresh()
         if not self.publisher.ready():

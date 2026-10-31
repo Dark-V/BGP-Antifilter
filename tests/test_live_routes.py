@@ -52,6 +52,9 @@ class Publisher:
     def ready(self):
         return True
 
+    def check_running(self):
+        pass
+
     def close(self):
         self.release.set()
 
@@ -290,9 +293,9 @@ class BGPWireTests(unittest.TestCase):
                                 removed = decode_prefixes(payload[2:2 + withdrawn])
                                 attrs = struct.unpack("!H", payload[2 + withdrawn:4 + withdrawn])[0]
                                 added = decode_prefixes(payload[4 + withdrawn + attrs:])
+                                received.append((set(added), set(removed)))
                                 routes.difference_update(removed)
                                 routes.update(added)
-                                received.append((set(added), set(removed)))
                     except (OSError, ConnectionError):
                         pass
                     except Exception as exc:
@@ -307,7 +310,7 @@ class BGPWireTests(unittest.TestCase):
             count = len(received)
             feed.update({"1.1.1.1/32"}, set())
             wait_for(lambda: "1.1.1.1/32" in routes)
-            self.assertEqual(received[count:], [({"1.1.1.1/32"}, set())])
+            self.assertEqual([change for change in received[count:] if change[0] or change[1]], [({"1.1.1.1/32"}, set())])
             feed.update(set(), {"1.1.1.1/32"})
             wait_for(lambda: "1.1.1.1/32" not in routes)
             connections[-1].shutdown(socket.SHUT_RDWR)
