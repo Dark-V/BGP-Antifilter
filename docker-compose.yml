@@ -1,5 +1,20 @@
 name: bgp-antifilter
 
+x-dns-environment: &dns-environment
+  DNS_PROXY_ENABLED: "${DNS_PROXY_ENABLED:-0}"
+  DNS_PROXY_BIND: "${DNS_PROXY_BIND:-}"
+  DNS_PROXY_PORT: "${DNS_PROXY_PORT:-53}"
+  DNS_PROXY_HEALTH_PORT: "${DNS_PROXY_HEALTH_PORT:-8053}"
+  DNS_PROXY_ALLOWED_CLIENTS: "${DNS_PROXY_ALLOWED_CLIENTS:-}"
+  ADGUARD_DNS: "${ADGUARD_DNS:-192.168.88.16}"
+  ADGUARD_DNS_PORT: "${ADGUARD_DNS_PORT:-53}"
+  DNS_ROUTE_GRACE: "${DNS_ROUTE_GRACE:-30}"
+  DNS_BGP_PORT: "${DNS_BGP_PORT:-1179}"
+  DNS_SYNC_MODE: "${DNS_SYNC_MODE:-async}"
+  DNS_SYNC_TIMEOUT: "${DNS_SYNC_TIMEOUT:-1}"
+  DNS_SYNC_ON_TIMEOUT: "${DNS_SYNC_ON_TIMEOUT:-servfail}"
+  DNS_HEALTH_DOMAIN: "${DNS_HEALTH_DOMAIN:-example.org}"
+
 services:
   bird:
     image: "bgp-antifilter-bird:${BGP_ANTIFILTER_VERSION:-0.4.5}"
@@ -16,14 +31,13 @@ services:
       org.opencontainers.image.source: "https://github.com/LeonidOz/BGP-Antifilter"
       org.opencontainers.image.url: "https://github.com/LeonidOz/BGP-Antifilter"
     environment:
+      <<: *dns-environment
       MY_AS: "${MY_AS:-64500}"
       MT_AS: "${MT_AS:-65455}"
       MT_IP: "${MT_IP:-192.168.55.1}"
       BIRD_IP: "${BIRD_IP:-192.168.55.5}"
       ROUTER_ID: "${ROUTER_ID:-192.168.55.5}"
       BGP_COMMUNITY: "${BGP_COMMUNITY:-65432,500}"
-      DNS_PROXY_ENABLED: "${DNS_PROXY_ENABLED:-0}"
-      DNS_BGP_PORT: "${DNS_BGP_PORT:-1179}"
       LISTS_FILE: /etc/bird/generated/config/lists.txt
       DOMAIN_LIST_URLS_FILE: /etc/bird/generated/config/domain-list-urls.txt
       INCLUDE_ASNS_FILE: /etc/bird/generated/config/include-asns.txt
@@ -66,6 +80,7 @@ services:
       org.opencontainers.image.source: "https://github.com/LeonidOz/BGP-Antifilter"
       org.opencontainers.image.url: "https://github.com/LeonidOz/BGP-Antifilter"
     environment:
+      <<: *dns-environment
       MY_AS: "${MY_AS:-64500}"
       MT_AS: "${MT_AS:-65455}"
       MT_IP: "${MT_IP:-192.168.55.1}"
@@ -94,7 +109,6 @@ services:
       CONTAINER_LOG_FILE: /etc/bird/generated/container.log
       SETTINGS_FILE: /etc/bird/generated/settings.json
       SETTINGS_ENV_FILE: /etc/bird/generated/settings.env
-      DNS_PROXY_ENABLED: "${DNS_PROXY_ENABLED:-0}"
       WORKSPACE_DIR: /workspace
       ENV_FILE: /workspace/.env
       VERSION_FILE: /workspace/VERSION
@@ -122,26 +136,16 @@ services:
       - ./generated:/etc/bird/generated
       - bird-run:/run/bird
     environment:
-      DNS_PROXY_BIND: "${DNS_PROXY_BIND:-${BIRD_IP:-192.168.55.5}}"
+      <<: *dns-environment
       MY_AS: "${MY_AS:-64500}"
-      DNS_BGP_PORT: "${DNS_BGP_PORT:-1179}"
-      DNS_PROXY_ENABLED: "${DNS_PROXY_ENABLED:-0}"
-      DNS_PROXY_PORT: "${DNS_PROXY_PORT:-53}"
-      DNS_PROXY_HEALTH_PORT: "${DNS_PROXY_HEALTH_PORT:-8053}"
-      DNS_PROXY_ALLOWED_CLIENTS: "${DNS_PROXY_ALLOWED_CLIENTS:-${MT_IP:-192.168.55.1}/32}"
-      ADGUARD_DNS: "${ADGUARD_DNS:-192.168.88.16}"
-      ADGUARD_DNS_PORT: "${ADGUARD_DNS_PORT:-53}"
-      DNS_ROUTE_GRACE: "${DNS_ROUTE_GRACE:-30}"
-      DNS_SYNC_MODE: "${DNS_SYNC_MODE:-async}"
-      DNS_SYNC_TIMEOUT: "${DNS_SYNC_TIMEOUT:-1}"
-      DNS_SYNC_ON_TIMEOUT: "${DNS_SYNC_ON_TIMEOUT:-servfail}"
-      DNS_HEALTH_DOMAIN: "${DNS_HEALTH_DOMAIN:-example.org}"
+      BIRD_IP: "${BIRD_IP:-192.168.55.5}"
+      MT_IP: "${MT_IP:-192.168.55.1}"
       BGP_PROTOCOL: "${BGP_PROTOCOL:-mikrotik}"
       HEALTHCHECK_REQUIRE_BGP: "${HEALTHCHECK_REQUIRE_BGP:-1}"
     depends_on:
       - bird
     healthcheck:
-      test: ["CMD-SHELL", "curl -fsS --max-time 10 http://$${DNS_PROXY_BIND}:$${DNS_PROXY_HEALTH_PORT}/ready >/dev/null"]
+      test: ["CMD", "python3", "-m", "bgp_antifilter.dns_settings"]
       interval: 10s
       timeout: 11s
       start_period: 15s

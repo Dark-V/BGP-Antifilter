@@ -1,6 +1,13 @@
 #!/bin/sh
 set -eu
 
+if [ -f "${SETTINGS_ENV_FILE:-/etc/bird/generated/settings.env}" ]; then
+  set -a
+  # shellcheck source=/dev/null
+  . "${SETTINGS_ENV_FILE:-/etc/bird/generated/settings.env}"
+  set +a
+fi
+
 ROUTES="${ROUTES_FILE:-/etc/bird/generated/routes.conf}"
 STATUS_FILE="${STATUS_FILE:-/etc/bird/generated/status.json}"
 BGP_PROTOCOL="${BGP_PROTOCOL:-mikrotik}"

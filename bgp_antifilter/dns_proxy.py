@@ -21,6 +21,7 @@ import dns.rdatatype
 from .dns_routes import domain_key
 from .live_routes import LiveRoutes
 from .dns_sync import ReplyGate, SyncOptions
+from .dns_settings import load_active_environment
 
 
 LOG = logging.getLogger("dns-proxy")
@@ -257,9 +258,10 @@ class ReadyHandler(BaseHTTPRequestHandler):
 
 def main():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    load_active_environment()
     if os.environ.get("DNS_PROXY_ENABLED", "0") != "1":
         raise ValueError("Set DNS_PROXY_ENABLED=1 for both bird and dns-proxy")
-    bind = str(ipaddress.IPv4Address(os.environ.get("DNS_PROXY_BIND", os.environ.get("BIRD_IP", "127.0.0.1"))))
+    bind = str(ipaddress.IPv4Address(os.environ.get("DNS_PROXY_BIND") or os.environ.get("BIRD_IP", "127.0.0.1")))
     port = int(os.environ.get("DNS_PROXY_PORT", "53"))
     upstream = os.environ.get("ADGUARD_DNS", "192.168.88.16")
     upstream_port = int(os.environ.get("ADGUARD_DNS_PORT", "53"))
@@ -267,7 +269,7 @@ def main():
         raise ValueError("Bind DNS proxy to its own specific address, different from AdGuard")
     if int(os.environ.get("DNS_ROUTE_GRACE", "30")) < 0:
         raise ValueError("DNS_ROUTE_GRACE must not be negative")
-    allowed = os.environ.get("DNS_PROXY_ALLOWED_CLIENTS", os.environ.get("MT_IP", "127.0.0.1") + "/32")
+    allowed = os.environ.get("DNS_PROXY_ALLOWED_CLIENTS") or os.environ.get("MT_IP", "127.0.0.1") + "/32"
     allowed = allowed.replace(",", " ").split() + [bind + "/32", "127.0.0.1/32"]
     sync = SyncOptions.from_env()  # Validate before starting route/BGP workers.
     proxy = Proxy(LiveRoutes(), upstream, port=upstream_port, allowed=allowed, sync=sync)

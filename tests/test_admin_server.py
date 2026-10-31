@@ -211,7 +211,8 @@ class AdminServerHelperTests(unittest.TestCase):
             self.assertEqual(values["CACHE_MAX_AGE"], "3600")
             self.assertEqual(values["INCLUDE_GOOGLE_RANGES"], "0")
             self.assertEqual(values["DNS_RESOLVERS"], "1.1.1.1,8.8.8.8")
-            self.assertIn("BGP_PROTOCOL=mt_main", (root / "settings.env").read_text(encoding="utf-8"))
+            self.assertEqual(values["BGP_PROTOCOL"], "mt_main")
+            self.assertNotIn("BGP_PROTOCOL=mt_main", (root / "settings.env").read_text(encoding="utf-8"), "Save must not apply BGP/DNS settings")
 
     def test_resolve_ipv4_targets_uses_effective_custom_dns(self):
         with mock.patch.object(admin_server, "effective_settings", return_value={

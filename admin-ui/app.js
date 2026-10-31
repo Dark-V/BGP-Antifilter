@@ -24,7 +24,10 @@ const dict = {
     comments: "Comments", emptyList: "No entries yet", itemPlaceholder: "New entry",
     logs: "Logs", containerLogs: "Container logs", checkedAddresses: "Checked addresses",
     downloadRoutes: "Download routes.conf", restartRequired: "restart", overridden: "changed",
-    updateSettings: "Update", securitySettings: "Generation safety", birdSettings: "BIRD / BGP",
+    updateSettings: "Update", securitySettings: "Generation safety", birdSettings: "BIRD / BGP", dnsSettings: "AdGuard DNS integration",
+    dnsSettingsHint: "Save keeps a draft. Apply starts or stops the DNS proxy and checks readiness. The DNS profile is managed automatically.",
+    settingsApplied: "Settings applied", settingsApplyPending: "Settings saved; applying and checking services…",
+    settingsRollbackOk: "Previous DNS / BGP configuration restored.", settingsRollbackFailed: "Recovery failed:",
     applySettings: "Apply now", applying: "Applying...", unsavedChanges: "Unsaved changes",
     noChanges: "No changes", backupSaved: "Backup", discardListChanges: "Discard unsaved list changes?",
     discardSettingsChanges: "Discard unsaved settings changes?", leavePageWarning: "You have unsaved changes.",
@@ -96,7 +99,10 @@ const dict = {
     comments: "Комментарии", emptyList: "Записей пока нет", itemPlaceholder: "Новая запись",
     logs: "Логи", containerLogs: "Логи контейнера", checkedAddresses: "Проверенные адреса",
     downloadRoutes: "Скачать routes.conf", restartRequired: "перезапуск", overridden: "изменено",
-    updateSettings: "Обновление", securitySettings: "Безопасность генерации", birdSettings: "BIRD / BGP",
+    updateSettings: "Обновление", securitySettings: "Безопасность генерации", birdSettings: "BIRD / BGP", dnsSettings: "Интеграция с AdGuard DNS",
+    dnsSettingsHint: "Сохранить — оставить черновик. Применить — запустить или остановить DNS-прокси и проверить готовность. DNS-профиль включается автоматически.",
+    settingsApplied: "Настройки применены", settingsApplyPending: "Настройки сохранены; применяем и проверяем сервисы…",
+    settingsRollbackOk: "Предыдущая конфигурация DNS / BGP восстановлена.", settingsRollbackFailed: "Восстановление не удалось:",
     applySettings: "Применить сейчас", applying: "Применяем...", unsavedChanges: "Есть несохраненные изменения",
     noChanges: "Изменений нет", backupSaved: "Бэкап", discardListChanges: "Отбросить несохраненные изменения списка?",
     discardSettingsChanges: "Отбросить несохраненные изменения настроек?", leavePageWarning: "Есть несохраненные изменения.",
@@ -164,6 +170,8 @@ let listEditIndex = null;
 let domainListEditIndex = null;
 let settingsSavedValues = {};
 let settingsDirty = false;
+let settingsApplying = false;
+let settingsApplyPoll = null;
 let checkIpPending = false;
 let loginNetworkLabels = [];
 let updateStatusPayload = null;
@@ -215,6 +223,19 @@ const listIcons = {
   "exclude-domains": "circle-minus"
 };
 const settingLabels = {
+  DNS_PROXY_ENABLED: {ru: "Включить DNS-интеграцию", en: "Enable DNS integration"},
+  ADGUARD_DNS: {ru: "IPv4 AdGuard", en: "AdGuard IPv4"},
+  ADGUARD_DNS_PORT: {ru: "DNS-порт AdGuard", en: "AdGuard DNS port"},
+  DNS_PROXY_BIND: {ru: "Локальный IPv4 DNS-прокси", en: "DNS proxy local IPv4"},
+  DNS_PROXY_PORT: {ru: "DNS-порт прокси", en: "Proxy DNS port"},
+  DNS_PROXY_ALLOWED_CLIENTS: {ru: "Разрешённые клиенты и сети", en: "Allowed clients and networks"},
+  DNS_PROXY_HEALTH_PORT: {ru: "Порт проверки готовности", en: "Readiness port"},
+  DNS_HEALTH_DOMAIN: {ru: "Домен для проверки DNS", en: "DNS health-check domain"},
+  DNS_BGP_PORT: {ru: "Порт локальной BGP-сессии", en: "Local BGP session port"},
+  DNS_ROUTE_GRACE: {ru: "Хранить IP дополнительно после TTL", en: "Keep IPs after DNS TTL"},
+  DNS_SYNC_MODE: {ru: "Когда возвращать DNS-ответ", en: "When to return DNS replies"},
+  DNS_SYNC_TIMEOUT: {ru: "Таймаут синхронизации маршрутов", en: "Route synchronization timeout"},
+  DNS_SYNC_ON_TIMEOUT: {ru: "При таймауте или ошибке синхронизации", en: "On synchronization timeout or error"},
   UPDATE_INTERVAL: {ru: "Интервал автообновления", en: "Auto refresh interval"},
   CACHE_MAX_AGE: {ru: "Время жизни кеша", en: "Cache lifetime"},
   FETCH_TIMEOUT: {ru: "Таймаут загрузки", en: "Fetch timeout"},
@@ -238,6 +259,23 @@ const settingsSectionLabels = {
   update: "updateSettings",
   security: "securitySettings",
   bird: "birdSettings",
+  dns: "dnsSettings",
+};
+const dnsOptionLabels = {
+  async: {ru: "Сразу; маршруты в фоне", en: "Immediately; routes in background"},
+  bgp: {ru: "После отправки обновления в BIRD", en: "After sending updates to BIRD"},
+  bird: {ru: "После проверки маршрутов в BIRD", en: "After verifying routes in BIRD"},
+  servfail: {ru: "Ошибка DNS (SERVFAIL), без IP", en: "DNS error (SERVFAIL), no IPs"},
+  forward: {ru: "Вернуть ответ AdGuard, допуская задержку маршрутов", en: "Return AdGuard's answer; routes may lag"},
+};
+const settingHints = {
+  DNS_PROXY_BIND: {ru: "Пусто — использовать IP BIRD. Адрес должен принадлежать хосту с прокси.", en: "Empty uses BIRD IP. The address must belong to the proxy host."},
+  DNS_PROXY_ALLOWED_CLIENTS: {ru: "IPv4/CIDR через запятую или с новой строки. Пусто — только MikroTik; сам хост разрешён всегда.", en: "IPv4/CIDR, separated by commas or new lines. Empty allows MikroTik only; the host is always allowed."},
+  DNS_PROXY_PORT: {ru: "Для переключения DNS на MikroTik используйте порт 53.", en: "Use port 53 for MikroTik DNS failover."},
+  DNS_PROXY_HEALTH_PORT: {ru: "При смене порта обновите проверку готовности в скрипте переключения MikroTik.", en: "If changed, update the readiness port in the MikroTik failover script."},
+  DNS_SYNC_MODE: {ru: "BIRD подтверждает свою локальную таблицу. Установка маршрута на MikroTik отдельно не проверяется.", en: "BIRD confirms its local table. MikroTik route installation is not checked."},
+  DNS_SYNC_TIMEOUT: {ru: "Общий срок ожидания после ответа AdGuard: больше 0 и не более 10 секунд.", en: "Total wait after AdGuard responds: greater than 0, at most 10 seconds."},
+  DNS_SYNC_ON_TIMEOUT: {ru: "Используется в режимах ожидания BGP/BIRD, в том числе при перегрузке.", en: "Applies in BGP/BIRD wait modes, including overload."},
 };
 
 function t(key) { return dict[lang][key] || dict.en[key] || key; }
@@ -297,7 +335,7 @@ function refreshListDirtyState(message = "", tone = "") {
 }
 
 function refreshSettingsDirtyState(message = "", tone = "") {
-  $("save-settings-btn").disabled = !settingsDirty;
+  $("save-settings-btn").disabled = settingsApplying || !settingsDirty;
   if (message) {
     $("settings-save-status").textContent = message;
     setStatusTone($("settings-save-status"), tone);
@@ -1960,6 +1998,12 @@ function renderSettingInput(item) {
         <span></span>
       </span>`;
   }
+  if (item.type === "enum") {
+    return `<select data-setting-key="${key}">${item.options.map(value => `<option value="${escapeHtml(value)}" ${item.value === value ? "selected" : ""}>${escapeHtml(dnsOptionLabels[value]?.[lang] || value)}</option>`).join("")}</select>`;
+  }
+  if (item.type === "cidr_list") {
+    return `<textarea data-setting-key="${key}" rows="2" spellcheck="false" placeholder="192.168.88.1/32">${escapeHtml(String(item.value || "").replaceAll(",", "\n"))}</textarea>`;
+  }
   if (item.type === "dns_list") {
     return `<textarea data-setting-key="${key}" rows="4" spellcheck="false" placeholder="1.1.1.1&#10;8.8.8.8">${escapeHtml(String(item.value || "").replaceAll(",", "\n"))}</textarea>`;
   }
@@ -1970,7 +2014,8 @@ function renderSettingInput(item) {
     `value="${escapeHtml(item.value)}"`,
     item.min != null ? `min="${escapeHtml(item.min)}"` : "",
     item.max != null ? `max="${escapeHtml(item.max)}"` : "",
-    item.type === "number" ? `step="0.1"` : "",
+    item.type === "number" ? `step="${escapeHtml(item.step || "0.1")}"` : "",
+    item.allow_empty ? "" : "required",
   ].filter(Boolean).join(" ");
   return `<input ${attrs}>`;
 }
@@ -1998,6 +2043,7 @@ function renderSettingCard(item, sectionItems) {
         ${renderSettingInput(item)}
         ${item.unit ? `<span class="unit">${escapeHtml(item.unit)}</span>` : ""}
       </span>
+      ${settingHints[item.key] ? `<span class="muted setting-hint">${escapeHtml(settingHints[item.key][lang])}</span>` : ""}
       ${embeddedDnsTimeout ? `
         <span class="setting-head">
           <strong>${escapeHtml(settingLabel(embeddedDnsTimeout.key))}</strong>
@@ -2024,12 +2070,43 @@ function renderSettings(data) {
   $("settings-form").innerHTML = (data.sections || []).map(section => `
     <article class="panel settings-section">
       <h2>${escapeHtml(t(settingsSectionLabels[section.id] || section.title))}</h2>
+      ${section.id === "dns" ? `<p class="muted">${escapeHtml(t("dnsSettingsHint"))}</p>` : ""}
       <div class="settings-grid">
         ${(section.items || []).map(item => renderSettingCard(item, section.items || [])).join("")}
       </div>
     </article>
   `).join("");
   refreshSettingsDirtyState();
+  renderSettingsApplication(data.application || {});
+}
+
+function renderSettingsApplication(state) {
+  settingsApplying = Boolean(state.active);
+  document.querySelectorAll("#settings-form input, #settings-form textarea, #settings-form select").forEach(input => { input.disabled = settingsApplying; });
+  $("apply-settings-btn").disabled = settingsApplying;
+  $("save-settings-btn").disabled = settingsApplying || !settingsDirty;
+  clearTimeout(settingsApplyPoll);
+  if (settingsApplying) {
+    $("settings-save-status").textContent = t("settingsApplyPending");
+    setStatusTone($("settings-save-status"), "warn");
+    pollSettingsApplication();
+  } else if (state.ok === true) {
+    $("settings-save-status").textContent = t("settingsApplied");
+    setStatusTone($("settings-save-status"), "ok");
+  } else if (state.ok === false) {
+    const recovery = state.rollback?.ok === true ? t("settingsRollbackOk") : state.rollback?.ok === false
+      ? `${t("settingsRollbackFailed")} ${state.rollback.error || ""}` : "";
+    $("settings-save-status").textContent = `${t("failed")}: ${state.error || ""} ${recovery}`.trim();
+    setStatusTone($("settings-save-status"), "fail");
+  }
+}
+
+function pollSettingsApplication(delay = 1000) {
+  clearTimeout(settingsApplyPoll);
+  settingsApplyPoll = setTimeout(async () => {
+    try { await loadSettings(); }
+    catch { if (settingsApplying) pollSettingsApplication(2000); }
+  }, delay);
 }
 
 async function loadSettings() {
@@ -2038,6 +2115,7 @@ async function loadSettings() {
 }
 
 async function saveSettings() {
+  if (!$("settings-form").reportValidity()) return false;
   const values = settingsFormValues();
   if (!settingsDirty) {
     refreshSettingsDirtyState(t("noChanges"), "ok");
@@ -2058,7 +2136,7 @@ async function saveSettings() {
     refreshSettingsDirtyState(`${t("failed")}: ${typeof err === "string" ? err : (err.error || err.message || "request failed")}`, "fail");
     return false;
   } finally {
-    $("save-settings-btn").disabled = false;
+    $("save-settings-btn").disabled = settingsApplying || !settingsDirty;
   }
 }
 
@@ -2069,16 +2147,20 @@ async function applySettingsNow() {
   setStatusTone($("settings-save-status"), "warn");
   try {
     if (!await saveSettings()) return;
-    const result = await api("/api/actions/reload", {method: "POST", body: "{}"});
-    await Promise.all([loadSettings(), loadStatus()]);
-    $("settings-save-status").textContent = result.accepted ? t("reloadStarted") : t("commandOk");
-    setStatusTone($("settings-save-status"), result.accepted ? "warn" : "ok");
+    await api("/api/actions/apply-settings", {method: "POST", body: "{}"});
+    renderSettingsApplication({active: true});
+    await loadSettings();
+    loadStatus().catch(() => {});
   } catch (err) {
+    if (settingsApplying) {
+      pollSettingsApplication(2000);
+      return;
+    }
     $("settings-save-status").textContent = `${t("failed")}: ${typeof err === "string" ? err : (err.error || err.message || "request failed")}`;
     setStatusTone($("settings-save-status"), "fail");
   } finally {
-    $("apply-settings-btn").disabled = false;
-    $("save-settings-btn").disabled = !settingsDirty;
+    $("apply-settings-btn").disabled = settingsApplying;
+    $("save-settings-btn").disabled = settingsApplying || !settingsDirty;
   }
 }
 

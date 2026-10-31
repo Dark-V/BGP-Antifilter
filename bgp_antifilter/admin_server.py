@@ -4,6 +4,7 @@ import hashlib
 import hmac
 import ipaddress
 import json
+import math
 import mimetypes
 import os
 from pathlib import Path
@@ -22,6 +23,7 @@ from urllib.parse import parse_qs, urlparse
 
 from . import __version__
 from . import dns_resolver
+from . import dns_settings
 from .runtime_paths import GENERATED_PATH_SPECS, LIST_FILE_SPECS, env_path, env_paths
 from . import updater_server
 
@@ -83,6 +85,7 @@ SETTINGS_SECTIONS = [
             {"key": "HEALTHCHECK_REQUIRE_BGP", "type": "bool", "default": "1"},
         ],
     },
+    {"id": "dns", "title": "AdGuard DNS", "items": dns_settings.DNS_SETTINGS},
 ]
 
 SETTINGS_BY_KEY = {item["key"]: item for section in SETTINGS_SECTIONS for item in section["items"]}
@@ -100,7 +103,172 @@ UPDATE_CHECK_CACHE = {
 }
 RELOAD_LOCK = threading.Lock()
 RELOAD_THREAD = None
+SETTINGS_LOCK = threading.RLock()
+SETTINGS_APPLY_THREAD = None
 SERVER_STARTED_AT_UNIX = int(time.time())
+SETTINGS_APPLY_INSTANCE = secrets.token_hex(8)
+
+
+def settings_apply_active():
+    return SETTINGS_APPLY_THREAD is not None and SETTINGS_APPLY_THREAD.is_alive()
+
+
+def settings_apply_payload():
+    state = json_load(SETTINGS_FILE.with_name("settings-apply.json"), {})
+    if state.get("active") and (state.get("instance") != SETTINGS_APPLY_INSTANCE or
+                                (not settings_apply_active() and not RELOAD_LOCK.locked())):
+        return {**state, "active": False, "ok": False, "error": "Settings application was interrupted; retry Apply"}
+    return state
+
+
+def write_settings_application(**updates):
+    path = SETTINGS_FILE.with_name("settings-apply.json")
+    state = json_load(path, {})
+    state.update(updates)
+    write_text_atomic(path, json.dumps(state, ensure_ascii=False, indent=2) + "\n")
+
+
+def settings_compose_context():
+    # Compose runs inside admin, while bind-mount sources belong to the host.
+    # Resolve the host project directory and name from this container's labels.
+    result = run_command(["docker", "inspect", socket.gethostname()])
+    if not result.get("ok"):
+        raise RuntimeError(result.get("stderr") or "Cannot inspect the admin container")
+    container = json.loads(result["stdout"])[0]
+    labels = container.get("Config", {}).get("Labels", {})
+    directory = labels.get("com.docker.compose.project.working_dir")
+    project = labels.get("com.docker.compose.project")
+    if not directory or not project:
+        raise RuntimeError("Admin container has no Compose project metadata")
+    args = ["--project-directory", directory, "--project-name", project]
+    if updater_server.ENV_FILE.exists():
+        args.extend(["--env-file", str(updater_server.ENV_FILE)])
+    return tuple(args + ["--profile", "dns"])
+
+
+def settings_compose(context, *args):
+    result = updater_server.run_compose(*context, *args, timeout=180, runtime_only=True)
+    if not result.get("ok"):
+        raise RuntimeError(result.get("stderr") or result.get("stdout") or "Compose command failed")
+    return result
+
+
+def recreate_settings_service(context, service):
+    # No -v: preserve generated state and named volumes. Removing the old
+    # container avoids legacy Compose's ContainerConfig recreation failure.
+    settings_compose(context, "rm", "-f", "-s", service)
+    settings_compose(context, "up", "-d", "--no-deps", "--no-build", service)
+
+
+def wait_settings_ready(context, values, timeout=180):
+    deadline = time.monotonic() + timeout
+    last_error = "Services did not become ready"
+    while time.monotonic() < deadline:
+        if values["DNS_PROXY_ENABLED"] == "1":
+            # Probe inside the host-network proxy, not the admin bridge network.
+            result = updater_server.run_compose(*context, "exec", "-T", "dns-proxy", "python3", "-m",
+                                                "bgp_antifilter.dns_settings", timeout=12, runtime_only=True)
+            if result.get("ok"):
+                return
+            last_error = result.get("stderr") or result.get("stdout") or last_error
+            ids = updater_server.run_compose(*context, "ps", "-a", "-q", "dns-proxy", timeout=12, runtime_only=True)
+            if ids.get("ok") and ids.get("stdout", "").strip():
+                status = run_command(["docker", "inspect", ids["stdout"].strip().splitlines()[0]], timeout=5)
+                if status.get("ok"):
+                    state = json.loads(status["stdout"])[0].get("State", {})
+                    if state.get("ExitCode") and (state.get("Restarting") or not state.get("Running")):
+                        raise RuntimeError(last_error.strip() or "DNS proxy failed to start")
+        else:
+            result = run_command(["birdc", "-r", "show", "status"], timeout=5)
+            if result.get("ok") and "up and running" in result.get("stdout", ""):
+                return
+            last_error = result.get("stderr") or last_error
+        time.sleep(0.5)
+    raise TimeoutError(last_error.strip())
+
+
+def write_active_settings(values):
+    overrides = {key: values[key] for key in dns_settings.ACTIVE_KEYS if values[key] != base_setting_value(key)}
+    write_text_atomic(dns_settings.active_path(SETTINGS_FILE), json.dumps({"values": overrides, "applied_values": values},
+                                                                      ensure_ascii=False, indent=2) + "\n")
+    write_settings_env(settings_overrides())
+
+
+def apply_settings(desired, previous):
+    path = dns_settings.active_path(SETTINGS_FILE)
+    old_document = text_load(path)
+    old_values = json_load(path, {}).get("applied_values", {})
+    changed = {key for key in dns_settings.ACTIVE_KEYS if desired[key] != previous[key]}
+    restart_bird = bool(changed & dns_settings.BIRD_RESTART_KEYS)
+    involves_dns = previous["DNS_PROXY_ENABLED"] == "1" or desired["DNS_PROXY_ENABLED"] == "1"
+    context = None
+    activated = False
+    try:
+        if changed:
+            context = settings_compose_context()
+            write_settings_application(stage="restarting", message="Applying DNS / BGP settings")
+            if involves_dns:
+                settings_compose(context, "stop", "dns-proxy")
+            activated = True
+            write_active_settings(desired)
+            if restart_bird:
+                recreate_settings_service(context, "bird")
+            if desired["DNS_PROXY_ENABLED"] == "1":
+                recreate_settings_service(context, "dns-proxy")
+            elif involves_dns:
+                settings_compose(context, "rm", "-f", "-s", "dns-proxy")
+            write_settings_application(stage="checking", message="Checking DNS / BGP readiness")
+            wait_settings_ready(context, desired)
+        generation_keys = SETTINGS_BY_KEY.keys() - dns_settings.ACTIVE_KEYS
+        previous_generation = {key: old_values.get(key, base_setting_value(key)) for key in generation_keys}
+        if not restart_bird and (not changed or any(desired[key] != previous_generation[key] for key in generation_keys)):
+            write_settings_application(stage="reloading", message="Updating routes")
+            result = run_command(["/reload-routes.sh"], timeout=600)
+            if not result.get("ok"):
+                raise RuntimeError(result.get("stderr") or result.get("stdout") or "Route update failed")
+        write_active_settings(desired)
+        write_settings_application(active=False, ok=True, stage="completed", message="Settings applied",
+                                   error=None, finished_at_unix=int(time.time()))
+    except Exception as exc:
+        rollback = None
+        if activated:
+            try:
+                if involves_dns:
+                    settings_compose(context, "stop", "dns-proxy")
+                if old_document:
+                    write_text_atomic(path, old_document)
+                else:
+                    path.unlink(missing_ok=True)
+                write_settings_env(settings_overrides())
+                if restart_bird:
+                    recreate_settings_service(context, "bird")
+                if previous["DNS_PROXY_ENABLED"] == "1":
+                    recreate_settings_service(context, "dns-proxy")
+                elif involves_dns:
+                    settings_compose(context, "rm", "-f", "-s", "dns-proxy")
+                wait_settings_ready(context, previous)
+                rollback = {"ok": True}
+            except Exception as rollback_error:
+                rollback = {"ok": False, "error": str(rollback_error)}
+        write_settings_application(active=False, ok=False, stage="failed", error=str(exc), rollback=rollback,
+                                   finished_at_unix=int(time.time()))
+
+
+def start_settings_apply():
+    global SETTINGS_APPLY_THREAD
+    with SETTINGS_LOCK, RELOAD_LOCK:
+        if settings_apply_active() or reload_thread_active() or reload_runtime_active() or reload_lock_active():
+            raise RuntimeError("An update or settings application is already running")
+        if updater_server.runtime_payload().get("active"):
+            raise RuntimeError("An application update is already running")
+        desired = {key: validate_setting(key, value) for key, value in effective_settings().items()}
+        validate_dns_settings(desired)
+        previous = active_settings()
+        write_settings_application(active=True, ok=None, stage="starting", message="Applying settings", error=None,
+                                   rollback=None, instance=SETTINGS_APPLY_INSTANCE, started_at_unix=int(time.time()))
+        SETTINGS_APPLY_THREAD = threading.Thread(target=apply_settings, args=(desired, previous), daemon=True)
+        SETTINGS_APPLY_THREAD.start()
+    return {"ok": True, "accepted": True}
 
 
 def json_load(path, default):
@@ -179,6 +347,7 @@ def base_setting_value(key):
 def command_environment():
     env = os.environ.copy()
     env.update(effective_settings())
+    env.update(active_settings())
     return env
 
 
@@ -215,6 +384,10 @@ def validate_setting(key, value):
             number = float(raw)
         except ValueError as exc:
             raise ValueError(f"{key} must be a number") from exc
+        if not math.isfinite(number):
+            raise ValueError(f"{key} must be finite")
+        if spec.get("exclusive_min") and number <= spec["min"]:
+            raise ValueError(f"{key} must be greater than {spec['min']}")
         if "min" in spec and number < spec["min"]:
             raise ValueError(f"{key} must be at least {spec['min']}")
         if "max" in spec and number > spec["max"]:
@@ -233,6 +406,25 @@ def validate_setting(key, value):
             return str(ipaddress.IPv4Address(raw))
         except ValueError as exc:
             raise ValueError(f"{key} must be a valid IPv4 address") from exc
+    if setting_type == "enum":
+        if raw not in spec["options"]:
+            raise ValueError(f"{key} must be one of: {', '.join(spec['options'])}")
+        return raw
+    if setting_type == "cidr_list":
+        try:
+            return ",".join(dict.fromkeys(str(ipaddress.IPv4Network(part, strict=False))
+                                        for part in raw.replace(",", " ").split()))
+        except ValueError as exc:
+            raise ValueError(f"{key} must contain IPv4 networks separated by spaces or commas") from exc
+    if setting_type == "domain":
+        try:
+            name = raw.rstrip(".").encode("idna").decode("ascii").lower()
+        except UnicodeError as exc:
+            raise ValueError(f"{key} must be a DNS domain name") from exc
+        if not name or len(name) > 253 or any(not label or len(label) > 63 or label.startswith("-")
+                or label.endswith("-") or not label.replace("-", "").isalnum() for label in name.split(".")):
+            raise ValueError(f"{key} must be a DNS domain name")
+        return name
     if setting_type == "community":
         parts = raw.split(",")
         if len(parts) != 2:
@@ -254,7 +446,40 @@ def validate_setting(key, value):
     raise ValueError(f"{key} has unsupported type")
 
 
+def active_settings():
+    overrides = dns_settings.active_overrides(SETTINGS_FILE)
+    return {key: validate_setting(key, overrides.get(key, os.environ.get(key, SETTINGS_BY_KEY[key]["default"])))
+            for key in dns_settings.ACTIVE_KEYS}
+
+
+def validate_dns_settings(values):
+    bind = dns_settings.listener_address(values)
+    if bind == "0.0.0.0":
+        raise ValueError("DNS_PROXY_BIND must be a specific local IPv4 address")
+    if values["DNS_PROXY_ENABLED"] == "1":
+        if values["DNS_PROXY_PORT"] == values["DNS_PROXY_HEALTH_PORT"]:
+            raise ValueError("DNS and readiness TCP ports must differ")
+        if bind == values["ADGUARD_DNS"] and values["DNS_PROXY_PORT"] == values["ADGUARD_DNS_PORT"]:
+            raise ValueError("DNS proxy and AdGuard must use different listeners")
+        if bind == "127.0.0.1" and values["DNS_BGP_PORT"] in (values["DNS_PROXY_PORT"], values["DNS_PROXY_HEALTH_PORT"]):
+            raise ValueError("Local BGP, DNS and readiness TCP ports must differ")
+
+
+def write_settings_env(normalized):
+    values = {key: value for key, value in normalized.items() if key not in dns_settings.ACTIVE_KEYS}
+    values.update(dns_settings.active_overrides(SETTINGS_FILE))
+    env_lines = [f"{key}={shlex.quote(value)}" for key, value in sorted(values.items())]
+    write_text_atomic(SETTINGS_ENV_FILE, "\n".join(env_lines) + ("\n" if env_lines else ""))
+
+
 def save_settings(values):
+    with SETTINGS_LOCK:
+        if settings_apply_active():
+            raise RuntimeError("Settings are being applied; wait for completion")
+        return _save_settings(values)
+
+
+def _save_settings(values):
     normalized = {}
     for key, value in values.items():
         if key not in SETTINGS_BY_KEY:
@@ -262,13 +487,18 @@ def save_settings(values):
         setting_value = validate_setting(key, value)
         if setting_value != base_setting_value(key):
             normalized[key] = setting_value
+    effective = {key: validate_setting(key, normalized.get(key, os.environ.get(key, spec["default"])))
+                 for key, spec in SETTINGS_BY_KEY.items()}
+    validate_dns_settings(effective)
+    path = dns_settings.active_path(SETTINGS_FILE)
+    if not path.exists():
+        write_text_atomic(path, json.dumps({"values": dns_settings.active_overrides(SETTINGS_FILE)}) + "\n")
     payload = {
         "updated_at": int(time.time()),
         "values": normalized,
     }
     write_text_atomic(SETTINGS_FILE, json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
-    env_lines = [f"{key}={shlex.quote(value)}" for key, value in sorted(normalized.items())]
-    write_text_atomic(SETTINGS_ENV_FILE, "\n".join(env_lines) + ("\n" if env_lines else ""))
+    write_settings_env(normalized)
     return normalized
 
 
@@ -297,6 +527,7 @@ def settings_payload():
         "overrides": overrides,
         "settings_file": str(SETTINGS_FILE),
         "settings_env_file": str(SETTINGS_ENV_FILE),
+        "application": settings_apply_payload(),
     }
 
 
@@ -452,7 +683,7 @@ def apply_reload():
 def start_reload():
     global RELOAD_THREAD
     with RELOAD_LOCK:
-        if reload_runtime_active() or (RELOAD_THREAD is not None and RELOAD_THREAD.is_alive()):
+        if settings_apply_active() or reload_runtime_active() or (RELOAD_THREAD is not None and RELOAD_THREAD.is_alive()):
             raise RuntimeError("reload already running")
         try:
             write_reload_result({
@@ -1069,7 +1300,18 @@ class AdminHandler(BaseHTTPRequestHandler):
                 return
             self.send_json(payload, HTTPStatus.ACCEPTED)
             return
+        if path == "/api/actions/apply-settings":
+            try:
+                payload = start_settings_apply()
+            except (RuntimeError, ValueError) as exc:
+                self.send_json({"error": str(exc)}, HTTPStatus.CONFLICT)
+                return
+            self.send_json(payload, HTTPStatus.ACCEPTED)
+            return
         if path == "/api/update/apply":
+            if settings_apply_active():
+                self.send_json({"error": "Settings are being applied"}, HTTPStatus.CONFLICT)
+                return
             data = self.read_json_or_error()
             if data is None:
                 return
@@ -1135,6 +1377,9 @@ class AdminHandler(BaseHTTPRequestHandler):
                 return
             try:
                 save_settings(values)
+            except RuntimeError as exc:
+                self.send_json({"error": str(exc)}, HTTPStatus.CONFLICT)
+                return
             except ValueError as exc:
                 self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
                 return

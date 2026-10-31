@@ -8,6 +8,7 @@ import subprocess
 import tempfile
 import threading
 import time
+from . import dns_settings
 
 
 WORKSPACE_DIR = Path(os.environ.get("WORKSPACE_DIR", "/workspace"))
@@ -134,10 +135,23 @@ def docker_compose_v2_command():
     return docker
 
 
-def compose_base_command():
+def compose_base_command(runtime_only=False):
     docker = docker_compose_v2_command()
-    if docker:
+    if docker and not runtime_only:
         return [docker, "compose", "-f", str(COMPOSE_FILE)], None
+
+    if runtime_only:
+        # Legacy Compose validates build paths even with --no-build. These
+        # host directories are outside admin's mount namespace; use images.
+        text = COMPOSE_FILE.read_text(encoding="utf-8")
+        text = re.sub(r"(?m)^    build:[^\n]*\n(?:^      [^\n]*\n|^[ \t]*\n)*", "", text)
+        if not docker:
+            text = sanitize_legacy_compose_text(text)
+        temp_file = tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".yml", delete=False)
+        with temp_file:
+            temp_file.write(text)
+        command = [docker, "compose"] if docker else [shutil.which("docker-compose") or "docker-compose"]
+        return [*command, "-f", temp_file.name], Path(temp_file.name)
 
     docker_compose = shutil.which("docker-compose")
     if docker_compose:
@@ -171,10 +185,14 @@ def uses_legacy_docker_compose():
 
 
 def restart_services_for_update():
+    services = tuple(service for service in COMPOSE_SERVICES if service != "dns-proxy")
+    active = dns_settings.active_overrides(os.environ.get("SETTINGS_FILE", "/etc/bird/generated/settings.json"))
+    if active.get("DNS_PROXY_ENABLED", os.environ.get("DNS_PROXY_ENABLED", "0")) == "1":
+        services += ("dns-proxy",)
     if not uses_legacy_docker_compose():
-        return COMPOSE_SERVICES
-    filtered = tuple(service for service in COMPOSE_SERVICES if service != SELF_SERVICE)
-    return filtered or COMPOSE_SERVICES
+        return services
+    filtered = tuple(service for service in services if service != SELF_SERVICE)
+    return filtered or services
 
 
 def health_status():
@@ -217,11 +235,11 @@ def update_env_version(path, version):
     write_text_atomic(path, "\n".join(result) + "\n")
 
 
-def run_compose(*args, timeout=1800):
+def run_compose(*args, timeout=1800, runtime_only=False):
     started = time.time()
     cleanup_path = None
     try:
-        base_command, cleanup_path = compose_base_command()
+        base_command, cleanup_path = compose_base_command(runtime_only=True) if runtime_only else compose_base_command()
         command = [*base_command, *args]
         completed = subprocess.run(
             command,

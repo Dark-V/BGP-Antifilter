@@ -1,4 +1,5 @@
 import json
+import http.cookiejar
 import os
 import re
 import shutil
@@ -88,7 +89,7 @@ class DockerSmokeTests(unittest.TestCase):
             self.tmp.cleanup()
 
     def compose_yaml(self):
-        generated = self.generated_dir.as_posix()
+        generated = "./generated" if getattr(self, "relative_mounts", False) else self.generated_dir.as_posix()
         template = (self.repo_root / "deploy" / "bird.conf.template").as_posix()
         context = self.repo_root.as_posix()
         return textwrap.dedent(
@@ -142,7 +143,7 @@ class DockerSmokeTests(unittest.TestCase):
                   - "{generated}:/etc/bird/generated"
                   - bird-run:/run/bird
                 environment:
-                  DNS_PROXY_ENABLED: "1"
+                  DNS_PROXY_ENABLED: "{int(getattr(self, 'dns_enabled', False))}"
                   MY_AS: "64500"
                   DNS_BGP_PORT: "{getattr(self, 'bgp_feed_port', 1179)}"
                   DNS_ROUTE_GRACE: "0"
@@ -155,6 +156,38 @@ class DockerSmokeTests(unittest.TestCase):
                   ADGUARD_DNS: "127.0.0.1"
                   ADGUARD_DNS_PORT: "{getattr(self, 'upstream_port', 15354)}"
                   HEALTHCHECK_REQUIRE_BGP: "0"
+                depends_on: [bird]
+              admin:
+                profiles: ["admin-test"]
+                image: "bgp-antifilter-bird:smoke"
+                entrypoint: ["/usr/bin/tini", "--", "/admin-server.py"]
+                ports: ["127.0.0.1:{getattr(self, 'admin_port', 18081)}:18080"]
+                volumes:
+                  - "{generated}:/etc/bird/generated"
+                  - bird-run:/run/bird
+                  - "{context}:/workspace"
+                  - "{self.compose_file.as_posix()}:/test-compose.yml:ro"
+                  - /var/run/docker.sock:/var/run/docker.sock
+                environment:
+                  ADMIN_PASSWORD: smoke-password
+                  ADMIN_PORT: "18080"
+                  COMPOSE_FILE: /test-compose.yml
+                  WORKSPACE_DIR: /workspace
+                  MY_AS: "64500"
+                  MT_AS: "65455"
+                  MT_IP: "192.168.55.1"
+                  BIRD_IP: "192.168.55.5"
+                  ROUTER_ID: "192.168.55.5"
+                  BGP_COMMUNITY: "65432,500"
+                  HEALTHCHECK_REQUIRE_BGP: "0"
+                  DNS_PROXY_ENABLED: "0"
+                  UPDATE_INTERVAL: "86400"
+                  INCLUDE_GOOGLE_RANGES: "0"
+                  LISTS_FILE: /etc/bird/generated/config/lists.txt
+                  DOMAIN_LIST_URLS_FILE: /etc/bird/generated/config/domain-list-urls.txt
+                  INCLUDE_ASNS_FILE: /etc/bird/generated/config/include-asns.txt
+                  INCLUDE_DOMAINS_FILE: /etc/bird/generated/config/include-domains.txt
+                  EXCLUDE_DOMAINS_FILE: /etc/bird/generated/config/exclude-domains.txt
                 depends_on: [bird]
             volumes:
               bird-run:
@@ -215,6 +248,101 @@ class DockerSmokeTests(unittest.TestCase):
 
     def read_json(self, path):
         return json.loads(path.read_text(encoding="utf-8"))
+
+    def test_admin_dns_settings_save_apply_ports_and_rollback(self):
+        self.relative_mounts = True
+        self.server_state["body"] = "93.184.216.0/24\n"
+        (self.config_dir / "include-domains.txt").write_text("example.test\n")
+        def free_port():
+            with socket.socket() as reservation:
+                reservation.bind(("127.0.0.1", 0))
+                return reservation.getsockname()[1]
+        self.admin_port = free_port()
+        dns_port, health_port, bgp_port = free_port(), free_port(), free_port()
+        upstream = dns_proxy.Proxy(mock.Mock(), "127.0.0.1")
+        def answer(query, tcp=False):
+            reply = dns.message.make_response(query)
+            reply.answer.append(dns.rrset.from_text(query.question[0].name, 60, "IN", "A", "1.1.1.1"))
+            return reply
+        upstream.exchange = answer
+        udp = dns_proxy.UDPServer(("127.0.0.1", 0), dns_proxy.UDPHandler, upstream)
+        tcp = dns_proxy.TCPServer(udp.server_address, dns_proxy.TCPHandler, upstream)
+        for server in (udp, tcp):
+            threading.Thread(target=server.serve_forever, daemon=True).start()
+        opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
+        base = f"http://127.0.0.1:{self.admin_port}"
+        def api(path, method="GET", body=None):
+            request = urllib.request.Request(base + path, data=json.dumps(body).encode() if body is not None else None,
+                                             method=method, headers={"Content-Type": "application/json"})
+            with opener.open(request, timeout=15) as response:
+                return json.load(response)
+        def login():
+            try:
+                return api("/api/login", "POST", {"password": "smoke-password"}).get("ok")
+            except (OSError, ValueError):
+                return False
+        def apply():
+            api("/api/actions/apply-settings", "POST", {})
+            state = {}
+            def completed():
+                nonlocal state
+                state = api("/api/settings").get("application", {})
+                return state and not state.get("active")
+            self.wait_until(completed, 150, "Panel settings application did not finish")
+            return state
+        def lookup(port):
+            query = dns.message.make_query("cdn.example.test", "A")
+            return dns.query.udp(query, "127.0.0.1", port=port, timeout=3)
+        try:
+            self.compose_file.write_text(self.compose_yaml(), encoding="utf-8")
+            self.compose("up", "-d", "--build", "bird", "admin")
+            self.wait_until(login, 30, "Admin API did not start")
+            self.wait_until(lambda: not api("/api/status").get("runtime", {}).get("generation_active"), 30, "Initial generation did not finish")
+            data = api("/api/settings")
+            self.assertEqual(len(next(section for section in data["sections"] if section["id"] == "dns")["items"]), 13)
+            desired = data["values"]
+            desired.update(DNS_PROXY_ENABLED="1", DNS_PROXY_BIND="127.0.0.1", ADGUARD_DNS="127.0.0.1",
+                           ADGUARD_DNS_PORT=str(udp.server_address[1]), DNS_PROXY_PORT=str(dns_port),
+                           DNS_PROXY_HEALTH_PORT=str(health_port), DNS_BGP_PORT=str(bgp_port),
+                           DNS_PROXY_ALLOWED_CLIENTS="127.0.0.1/32", DNS_SYNC_MODE="bird", DNS_SYNC_TIMEOUT="0.5",
+                           DNS_SYNC_ON_TIMEOUT="servfail", DNS_ROUTE_GRACE="2")
+            api("/api/settings", "PUT", {"values": desired})
+            self.assertNotIn("DNS_PROXY_ENABLED=1", (self.generated_dir / "settings.env").read_text())
+            self.assertFalse(self.compose("ps", "-q", "dns-proxy").stdout.strip(), "Save activated the proxy")
+            self.assertTrue(apply().get("ok"))
+            self.assertEqual(lookup(dns_port).rcode(), dns.rcode.NOERROR)
+            self.assertIn("1.1.1.1/32", self.compose("exec", "-T", "bird", "birdc", "show", "route", "for", "1.1.1.1").stdout)
+            bird_id = self.compose("ps", "-q", "bird").stdout.strip()
+            desired.update(DNS_SYNC_MODE="async", DNS_SYNC_TIMEOUT="0.2", DNS_SYNC_ON_TIMEOUT="forward")
+            api("/api/settings", "PUT", {"values": desired})
+            self.assertTrue(apply().get("ok"))
+            self.assertEqual(self.compose("ps", "-q", "bird").stdout.strip(), bird_id, "Sync change restarted BIRD")
+            dns_port, health_port = free_port(), free_port()
+            desired.update(DNS_PROXY_PORT=str(dns_port), DNS_PROXY_HEALTH_PORT=str(health_port))
+            api("/api/settings", "PUT", {"values": desired})
+            self.assertTrue(apply().get("ok"))
+            self.assertEqual(lookup(dns_port).rcode(), dns.rcode.NOERROR)
+            with urllib.request.urlopen(f"http://127.0.0.1:{health_port}/ready", timeout=5) as response:
+                self.assertTrue(json.load(response)["ready"])
+            desired["DNS_PROXY_BIND"] = "198.51.100.254"  # Not an address of this host.
+            api("/api/settings", "PUT", {"values": desired})
+            failed = apply()
+            self.assertFalse(failed["ok"])
+            self.assertTrue(failed["rollback"]["ok"], failed)
+            self.assertEqual(lookup(dns_port).rcode(), dns.rcode.NOERROR, "Rollback did not restore working DNS")
+            self.assertEqual(api("/api/settings")["values"]["DNS_PROXY_BIND"], "198.51.100.254", "Saved draft was lost")
+            desired.update(DNS_PROXY_ENABLED="0", DNS_PROXY_BIND="127.0.0.1")
+            api("/api/settings", "PUT", {"values": desired})
+            self.assertTrue(apply().get("ok"))
+            self.assertFalse(self.compose("ps", "-q", "dns-proxy").stdout.strip())
+            self.assertIn("static_antifilter", self.compose("exec", "-T", "bird", "birdc", "show", "protocols").stdout)
+        except Exception:
+            print(self.compose("logs", "admin", "bird", "dns-proxy", check=False).stdout[-14000:])
+            raise
+        finally:
+            for server in (udp, tcp):
+                server.shutdown()
+                server.server_close()
 
     def test_dns_proxy_applies_real_bird_routes_and_reports_bird_outage(self):
         self.dns_enabled = True
