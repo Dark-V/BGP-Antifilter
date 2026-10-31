@@ -1213,6 +1213,10 @@ details pre { margin-top: 12px; max-height: 360px; overflow: auto; }
   min-width: 0;
   max-width: 100%;
 }
+.settings-form textarea {
+  min-height: 72px;
+  resize: vertical;
+}
 .setting-badges {
   display: flex;
   flex-wrap: wrap;
