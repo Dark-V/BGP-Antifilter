@@ -170,6 +170,7 @@ class DockerSmokeTests(unittest.TestCase):
                   - /var/run/docker.sock:/var/run/docker.sock
                 environment:
                   ADMIN_PASSWORD: smoke-password
+                  ADMIN_ENABLED: "1"
                   ADMIN_PORT: "18080"
                   COMPOSE_FILE: /test-compose.yml
                   WORKSPACE_DIR: /workspace
