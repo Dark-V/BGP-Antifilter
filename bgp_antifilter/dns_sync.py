@@ -50,14 +50,20 @@ class ReplyGate:
         if not self.readers.acquire(timeout=remaining(deadline)):
             raise TimeoutError("BIRD confirmation readers are busy")
         try:
-            reply = subprocess.run(["birdc", "-r", *args], capture_output=True, text=True,
-                                   timeout=remaining(deadline), check=True)
-            # birdc can exit successfully after a CLI error. Do not interpret
-            # syntax/access errors as an absent route.
-            if not re.search(r"BIRD .* ready\.", reply.stdout) or re.search(
-                    r"(?i)(syntax error|access denied|unknown (?:command|protocol)|no such|cannot|error)", reply.stdout):
+            reply = subprocess.run(["birdc", "-v", "-r", *args], capture_output=True, text=True,
+                                   timeout=remaining(deadline), check=False)
+            codes = [int(value) for value in re.findall(r"(?m)^(\d{4})[ -]", reply.stdout)]
+            # BIRD's explicit "Network not found" is CLI 8001 / exit 1.
+            # It is a valid absence result, unlike every other CLI failure.
+            absent = (args[:2] == ("show", "route") and reply.returncode == 1
+                      and codes and codes[-1] == 8001 and all(code < 8000 or code == 8001 for code in codes))
+            if reply.returncode and not absent:
+                reply.check_returncode()
+            output = re.sub(r"(?m)^\d{4}[ -]", "", reply.stdout)
+            if (any(code >= 8000 for code in codes) and not absent) or not re.search(r"BIRD .* ready\.", output) or re.search(
+                    r"(?i)(syntax error|access denied|unknown (?:command|protocol)|no such|cannot|error)", output):
                 raise RuntimeError("BIRD rejected the route confirmation query")
-            return reply.stdout
+            return output
         finally:
             self.readers.release()
 

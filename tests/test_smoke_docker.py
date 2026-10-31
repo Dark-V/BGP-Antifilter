@@ -319,6 +319,7 @@ class DockerSmokeTests(unittest.TestCase):
             with self.assertRaises(urllib.error.HTTPError) as failed:
                 ready()
             self.assertEqual(failed.exception.code, 503)
+            failed.exception.close()
             answer_address[0] = "1.1.1.3"
             reply = dns.query.udp(query, "127.0.0.1", port=self.dns_port, timeout=5)
             self.assertEqual(reply.rcode(), dns.rcode.NOERROR, "A route outage delayed/replaced the valid DNS response")
@@ -338,10 +339,15 @@ class DockerSmokeTests(unittest.TestCase):
             self.assertEqual(reply.answer[0][0].address, "1.1.1.4")
             self.assertTrue(route_present("1.1.1.4"), "DNS arrived before the route was installed in BIRD")
             reply = dns.query.tcp(excluded, "127.0.0.1", port=self.dns_port, timeout=5)
-            self.assertEqual(reply.rcode(), dns.rcode.NOERROR)
+            self.assertEqual(reply.rcode(), dns.rcode.NOERROR,
+                             self.compose("logs", "dns-proxy", check=False).stdout[-5000:] if reply.rcode() else "")
             self.assertFalse(route_present("93.184.216.34"), "DNS arrived before BIRD applied the exclusion")
-            exported = self.compose("exec", "-T", "bird", "birdc", "show", "route", "export", "mikrotik").stdout
-            self.assertNotIn("198.18.0.1/32", exported, "Local synchronization marker leaked to MikroTik export")
+            # Execute the real export filter even though the smoke test has
+            # no external MikroTik peer/channel. Check a positive control too.
+            for value, wanted in (("198.18.0.1", False), ("1.1.1.4", True)):
+                filtered = self.compose("exec", "-T", "bird", "birdc", "show", "route", "for", value,
+                                        "filter", "export_to_mikrotik").stdout
+                self.assertEqual(value + "/32" in filtered, wanted, "Unexpected MikroTik export filter result")
             self.assertEqual(reconfigured_at(), strict_configure_time)
             self.compose("stop", "bird")
             answer_address[0] = "1.1.1.5"

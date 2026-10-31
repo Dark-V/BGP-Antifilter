@@ -191,6 +191,17 @@ class BirdConfirmationTests(unittest.TestCase):
                 with self.assertRaises(RuntimeError):
                     self.gate._bird(time.monotonic() + 1, "show", "route", "for", "1.1.1.1")
 
+    def test_bird_cli_8001_exit_one_is_valid_route_absence_only(self):
+        result = subprocess.CompletedProcess([], 1, "0001 BIRD 2.0.12 ready.\n0018 Access restricted\n8001 Network not found\n", "")
+        with mock.patch.object(dns_sync.subprocess, "run", return_value=result):
+            self.assertIn("Network not found", self.gate._bird(time.monotonic() + 1, "show", "route", "for", "1.1.1.1"))
+            with self.assertRaises(subprocess.CalledProcessError):
+                self.gate._bird(time.monotonic() + 1, "show", "protocols", "dns_live")
+        result.stdout = "0001 BIRD 2.0.12 ready.\n9001 syntax error\n"
+        with mock.patch.object(dns_sync.subprocess, "run", return_value=result):
+            with self.assertRaises(subprocess.CalledProcessError):
+                self.gate._bird(time.monotonic() + 1, "show", "route", "for", "1.1.1.1")
+
 
 class FeedBarrierTests(unittest.TestCase):
     def test_marker_carries_revision_and_no_advertise(self):
