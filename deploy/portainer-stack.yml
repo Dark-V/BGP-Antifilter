@@ -1,0 +1,117 @@
+# Portainer: Docker Standalone, stack name bgp-antifilter.
+# Set ADMIN_PASSWORD in the stack's Environment variables before deploying.
+# The delivered download pins BGP_ANTIFILTER_IMAGE to an immutable digest.
+name: bgp-antifilter
+
+x-image: &image "${BGP_ANTIFILTER_IMAGE:-ghcr.io/dark-v/bgp-antifilter:portainer}"
+x-environment: &environment
+  BGP_ANTIFILTER_IMAGE: *image
+  PORTAINER_MANAGED: "1"
+  MY_AS: "${MY_AS:-64500}"
+  MT_AS: "${MT_AS:-65455}"
+  MT_IP: "${MT_IP:-192.168.88.1}"
+  BIRD_IP: "${BIRD_IP:-192.168.88.10}"
+  ROUTER_ID: "${ROUTER_ID:-192.168.88.10}"
+  BGP_COMMUNITY: "${BGP_COMMUNITY:-65432,500}"
+  BGP_PROTOCOL: "${BGP_PROTOCOL:-mikrotik}"
+  HEALTHCHECK_REQUIRE_BGP: "${HEALTHCHECK_REQUIRE_BGP:-1}"
+  HEALTHCHECK_FAIL_ON_DEGRADED: "0"
+  ADMIN_ENABLED: "1"
+  ADMIN_PORT: "${ADMIN_PORT:-8080}"
+  DNS_PROXY_ENABLED: "${DNS_PROXY_ENABLED:-1}"
+  DNS_PROXY_BIND: "${DNS_PROXY_BIND:-}"
+  DNS_PROXY_PORT: "${DNS_PROXY_PORT:-53}"
+  DNS_PROXY_HEALTH_PORT: "${DNS_PROXY_HEALTH_PORT:-8053}"
+  DNS_PROXY_ALLOWED_CLIENTS: "${DNS_PROXY_ALLOWED_CLIENTS:-}"
+  ADGUARD_DNS: "${ADGUARD_DNS:-192.168.88.16}"
+  ADGUARD_DNS_PORT: "${ADGUARD_DNS_PORT:-53}"
+  DNS_ROUTE_GRACE: "${DNS_ROUTE_GRACE:-30}"
+  DNS_BGP_PORT: "${DNS_BGP_PORT:-1179}"
+  DNS_SYNC_MODE: "${DNS_SYNC_MODE:-bird}"
+  DNS_SYNC_TIMEOUT: "${DNS_SYNC_TIMEOUT:-1}"
+  DNS_SYNC_ON_TIMEOUT: "${DNS_SYNC_ON_TIMEOUT:-servfail}"
+  DNS_HEALTH_DOMAIN: "${DNS_HEALTH_DOMAIN:-example.org}"
+  DNS_RESOLVERS: "${DNS_RESOLVERS:-192.168.88.16}"
+  DNS_RESOLVE_TIMEOUT: "${DNS_RESOLVE_TIMEOUT:-3}"
+  UPDATE_INTERVAL: "${UPDATE_INTERVAL:-1800}"
+  CACHE_MAX_AGE: "${CACHE_MAX_AGE:-604800}"
+  INCLUDE_GOOGLE_RANGES: "${INCLUDE_GOOGLE_RANGES:-1}"
+  MIN_PREFIX_LENGTH: "${MIN_PREFIX_LENGTH:-8}"
+  ALLOW_BROAD_ROUTES: "${ALLOW_BROAD_ROUTES:-0}"
+  LISTS_FILE: /etc/bird/generated/config/lists.txt
+  DOMAIN_LIST_URLS_FILE: /etc/bird/generated/config/domain-list-urls.txt
+  INCLUDE_ASNS_FILE: /etc/bird/generated/config/include-asns.txt
+  INCLUDE_COUNTRIES_FILE: /etc/bird/generated/config/include-countries.txt
+  INCLUDE_DOMAINS_FILE: /etc/bird/generated/config/include-domains.txt
+  EXCLUDE_DOMAINS_FILE: /etc/bird/generated/config/exclude-domains.txt
+  SETTINGS_FILE: /etc/bird/generated/settings.json
+  SETTINGS_ENV_FILE: /etc/bird/generated/settings.env
+  RUNTIME_FILE: /etc/bird/generated/runtime.json
+  UPDATE_RUNTIME_FILE: /etc/bird/generated/update-runtime.json
+  CONTAINER_LOG_FILE: /etc/bird/generated/container.log
+
+x-service: &service
+  image: *image
+  network_mode: host
+  restart: unless-stopped
+  privileged: false
+  cap_drop: [NET_ADMIN]
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
+
+services:
+  bird:
+    <<: *service
+    environment:
+      <<: *environment
+      ADMIN_ENABLED: "0"
+    volumes:
+      - generated:/etc/bird/generated
+      - bird-run:/run/bird
+
+  dns-proxy:
+    <<: *service
+    entrypoint: ["/usr/bin/tini", "--", "python3", "-m", "bgp_antifilter.dns_proxy"]
+    environment: *environment
+    volumes:
+      - generated:/etc/bird/generated
+      - bird-run:/run/bird
+    depends_on: [bird]
+    healthcheck:
+      test: ["CMD", "python3", "-m", "bgp_antifilter.dns_settings"]
+      interval: 10s
+      timeout: 11s
+      start_period: 20s
+      retries: 3
+
+  admin:
+    <<: *service
+    container_name: "${BGP_ADMIN_CONTAINER:-bgp-antifilter-admin}"
+    entrypoint: ["/usr/bin/tini", "--", "/admin-server.py"]
+    environment:
+      <<: *environment
+      WORKSPACE_DIR: /opt/bgp-antifilter
+      COMPOSE_FILE: /opt/bgp-antifilter/portainer-stack.yml
+      ENV_FILE: /opt/bgp-antifilter/.env
+      ADMIN_PASSWORD: "${ADMIN_PASSWORD:?Set ADMIN_PASSWORD in Portainer stack environment variables}"
+      VERSION_FILE: /VERSION
+      ADMIN_CONTAINER_NAME: "${BGP_ADMIN_CONTAINER:-bgp-antifilter-admin}"
+      BGP_ADMIN_CONTAINER: "${BGP_ADMIN_CONTAINER:-bgp-antifilter-admin}"
+    volumes:
+      - generated:/etc/bird/generated
+      - bird-run:/run/bird
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on: [bird]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:$${ADMIN_PORT}/api/session >/dev/null"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+
+volumes:
+  generated:
+  bird-run:

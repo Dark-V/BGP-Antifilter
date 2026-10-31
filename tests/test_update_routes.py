@@ -259,6 +259,18 @@ class CountrySourceTests(unittest.TestCase):
 
 
 class CustomDnsFetchTests(unittest.TestCase):
+    def test_numeric_http_source_does_not_query_custom_dns(self):
+        response = mock.Mock(status=200)
+        response.read.return_value = b"192.0.2.0/24\n"
+        connection = mock.Mock()
+        connection.getresponse.return_value = response
+        with mock.patch.object(update_routes.dns_resolver, "query_a_records", side_effect=AssertionError("Unexpected DNS query")):
+            with mock.patch("bgp_antifilter.update_routes.http.client.HTTPConnection", return_value=connection) as http_mock:
+                text = update_routes.fetch_url("http://127.0.0.1:8053/routes.txt", timeout=1, attempts=1,
+                                               dns_nameservers=["192.168.88.16"])
+        self.assertEqual(text, "192.0.2.0/24\n")
+        http_mock.assert_called_once_with("127.0.0.1", 8053, timeout=1)
+
     def test_fetch_url_uses_custom_dns_for_http_sources(self):
         response = mock.Mock()
         response.status = 200

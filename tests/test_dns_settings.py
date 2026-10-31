@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-from bgp_antifilter import admin_server as admin, dns_settings, updater_server
+from bgp_antifilter import admin_server as admin, dns_settings, dns_proxy, updater_server
 
 
 class DNSSettingsTests(unittest.TestCase):
@@ -44,6 +44,27 @@ class DNSSettingsTests(unittest.TestCase):
         self.assertEqual({item["key"] for item in section["items"]}, dns_settings.DNS_KEYS)
         modes = next(item for item in section["items"] if item["key"] == "DNS_SYNC_MODE")
         self.assertEqual(modes["options"], ["async", "bgp", "bird"])
+
+    def test_disabled_proxy_stays_idle_without_network_workers(self):
+        with mock.patch.object(dns_proxy.threading, "Event") as event, mock.patch.object(
+                dns_proxy, "LiveRoutes") as worker, mock.patch.object(dns_proxy, "UDPServer") as listener:
+            dns_proxy.main()
+        event.return_value.wait.assert_called_once_with()
+        worker.assert_not_called()
+        listener.assert_not_called()
+        with mock.patch.object(dns_settings.urllib.request, "urlopen") as request:
+            dns_settings.check_health()
+        request.assert_not_called()
+
+    def test_portainer_owns_image_updates_but_not_dns_settings(self):
+        with mock.patch.dict(os.environ, {"PORTAINER_MANAGED": "1"}):
+            supported, reason = updater_server.health_status()
+            self.assertFalse(supported)
+            self.assertIn("Portainer", reason)
+            with self.assertRaises(RuntimeError):
+                updater_server.start_update("0.4.6")
+        self.apply(self.save(DNS_PROXY_ENABLED="1", DNS_SYNC_MODE="bird"))
+        self.assertEqual(admin.active_settings()["DNS_SYNC_MODE"], "bird")
 
     def test_save_does_not_activate_pending_dns_configuration(self):
         desired = self.save(DNS_PROXY_ENABLED="1", DNS_SYNC_MODE="bird", DNS_SYNC_TIMEOUT="0.25")

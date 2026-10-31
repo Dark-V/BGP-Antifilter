@@ -196,8 +196,9 @@ class DockerSmokeTests(unittest.TestCase):
         ).strip() + "\n"
 
     def compose(self, *args, check=True):
+        env_args = ["--env-file", str(self.stack_env_file)] if getattr(self, "stack_env_file", None) else []
         return subprocess.run(
-            ["docker", "compose", "-p", self.project_name, "-f", str(self.compose_file), *args],
+            ["docker", "compose", "-p", self.project_name, "-f", str(self.compose_file), *env_args, *args],
             cwd=self.repo_root,
             check=check,
             capture_output=True,
@@ -249,6 +250,107 @@ class DockerSmokeTests(unittest.TestCase):
 
     def read_json(self, path):
         return json.loads(path.read_text(encoding="utf-8"))
+
+    def test_portainer_stack_uses_embedded_config_and_named_volumes(self):
+        def free_port():
+            with socket.socket() as reservation:
+                reservation.bind(("127.0.0.1", 0))
+                return reservation.getsockname()[1]
+        admin_port, dns_port, health_port, bgp_port = [free_port() for _ in range(4)]
+        upstream = dns_proxy.Proxy(mock.Mock(), "127.0.0.1")
+        def answer(query, tcp=False):
+            response = dns.message.make_response(query)
+            response.answer.append(dns.rrset.from_text(query.question[0].name, 60, "IN", "A", "1.0.0.1"))
+            return response
+        upstream.exchange = answer
+        udp = dns_proxy.UDPServer(("127.0.0.1", 0), dns_proxy.UDPHandler, upstream)
+        tcp = dns_proxy.TCPServer(udp.server_address, dns_proxy.TCPHandler, upstream)
+        for server in (udp, tcp):
+            threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.stack_env_file = self.root / "stack.env"
+        published_image = os.environ.get("PORTAINER_SMOKE_IMAGE")
+        settings = {"BGP_ANTIFILTER_IMAGE": published_image or "bgp-antifilter-bird:smoke", "ADMIN_PASSWORD": "smoke-password",
+                    "BGP_ADMIN_CONTAINER": self.project_name + "-admin", "BIRD_IP": "127.0.0.1", "ROUTER_ID": "127.0.0.1",
+                    "ADMIN_PORT": str(admin_port), "DNS_PROXY_ENABLED": "0", "ADGUARD_DNS": "127.0.0.1",
+                    "ADGUARD_DNS_PORT": str(udp.server_address[1]), "DNS_PROXY_PORT": str(dns_port),
+                    "DNS_PROXY_HEALTH_PORT": str(health_port), "DNS_BGP_PORT": str(bgp_port),
+                    "HEALTHCHECK_REQUIRE_BGP": "0", "INCLUDE_GOOGLE_RANGES": "0", "DNS_RESOLVERS": "127.0.0.1"}
+        self.stack_env_file.write_text("\n".join(f"{key}={value}" for key, value in settings.items()) + "\n")
+        self.compose_file.write_text((self.repo_root / "deploy/portainer-stack.yml").read_text())
+        opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
+        def api(path, method="GET", data=None):
+            request = urllib.request.Request(f"http://127.0.0.1:{admin_port}" + path, method=method,
+                                             data=json.dumps(data).encode() if data is not None else None,
+                                             headers={"Content-Type": "application/json"})
+            with opener.open(request, timeout=15) as response:
+                return json.load(response)
+        def login():
+            try:
+                return api("/api/login", "POST", {"password": "smoke-password"}).get("ok")
+            except OSError:
+                return False
+        def apply():
+            api("/api/actions/apply-settings", "POST", {})
+            state = {}
+            def finished():
+                nonlocal state
+                state = api("/api/settings").get("application", {})
+                return state and not state.get("active")
+            self.wait_until(finished, 60, "Embedded Portainer configuration did not apply")
+            self.assertTrue(state.get("ok"), state)
+        try:
+            if not published_image:
+                subprocess.run(["docker", "build", "-q", "-t", "bgp-antifilter-bird:smoke", "-f", "deploy/Dockerfile", "."],
+                               cwd=self.repo_root, check=True, capture_output=True, text=True)
+            seed = ("from pathlib import Path; from bgp_antifilter.update_routes import cache_path; "
+                    "p=Path('/etc/bird/generated/config'); p.mkdir(parents=True,exist_ok=True); "
+                    "[(p/n).write_text('') for n in ['domain-list-urls.txt','include-asns.txt','include-countries.txt','exclude-domains.txt']]; "
+                    f"(p/'lists.txt').write_text('http://127.0.0.1:{self.port}/routes.txt\\n'); "
+                    "(p/'include-domains.txt').write_text('example.test\\n'); "
+                    "c=p.parent/'cache'; c.mkdir(exist_ok=True); cache_path(c,'include-domain','example.test').write_text('1.1.1.1/32\\n')")
+            self.compose("run", "--rm", "--no-deps", "--entrypoint", "python3", "bird", "-c", seed)
+            self.compose("up", "-d")
+            self.wait_until(login, 30, "Packaged admin UI did not start")
+            self.wait_until(lambda: not api("/api/status").get("runtime", {}).get("generation_active"), 30, "Packaged BIRD did not initialize")
+            self.wait_until(lambda: "up and running" in self.compose("exec", "-T", "bird", "birdc", "show", "status", check=False).stdout,
+                            30, "Packaged BIRD did not start")
+            # No repository/host-directory mount is available in this stack.
+            for service in ("bird", "dns-proxy", "admin"):
+                cid = self.compose("ps", "-q", service).stdout.strip()
+                info = json.loads(subprocess.check_output(["docker", "inspect", cid], text=True))[0]
+                self.assertFalse(info["HostConfig"]["Privileged"])
+                self.assertIn("NET_ADMIN", [value.removeprefix("CAP_") for value in info["HostConfig"]["CapDrop"]])
+                self.assertNotIn("NET_ADMIN", [value.removeprefix("CAP_") for value in info["HostConfig"].get("CapAdd") or []])
+                self.assertFalse(any(mount["Type"] == "bind" and mount["Destination"] != "/var/run/docker.sock" for mount in info["Mounts"]))
+            desired = api("/api/settings")["values"]
+            desired["DNS_PROXY_ENABLED"] = "1"
+            api("/api/settings", "PUT", {"values": desired})
+            apply()
+            reply = dns.query.udp(dns.message.make_query("cdn.example.test", "A"), "127.0.0.1", port=dns_port, timeout=5)
+            self.assertEqual(reply.rcode(), dns.rcode.NOERROR)
+            self.assertIn("1.0.0.1/32", self.compose("exec", "-T", "bird", "birdc", "show", "route", "for", "1.0.0.1").stdout)
+            desired["DNS_PROXY_ENABLED"] = "0"
+            api("/api/settings", "PUT", {"values": desired})
+            apply()
+            # A Portainer redeploy may recreate the disabled proxy. It must
+            # remain idle, retain its state volume and avoid a restart loop.
+            self.compose("up", "-d", "dns-proxy")
+            self.compose("exec", "-T", "dns-proxy", "python3", "-m", "bgp_antifilter.dns_settings")
+            self.assertEqual(self.compose("exec", "-T", "bird", "python3", "-c",
+                                         "from pathlib import Path; print(Path('/etc/bird/generated/dns-cache.sqlite3').exists())").stdout.strip(), "True")
+        except Exception:
+            print(self.compose("logs", "dns-proxy", check=False).stdout[-4000:])
+            print(self.compose("exec", "-T", "admin", "python3", "-c",
+                               "from pathlib import Path; p=Path('/etc/bird/generated'); "
+                               "[(print('FILE',n),print((p/n).read_text()[-12000:] if (p/n).exists() else 'MISSING')) "
+                               "for n in ['container.log','settings.env','dns-active.json','runtime.json','settings-apply.json','status.json']]",
+                               check=False).stdout)
+            raise
+        finally:
+            for server in (udp, tcp):
+                server.shutdown()
+                server.server_close()
+            self.compose("down", "--volumes", "--remove-orphans", check=False)
 
     def test_admin_dns_settings_save_apply_ports_and_rollback(self):
         self.relative_mounts = True

@@ -259,8 +259,15 @@ class ReadyHandler(BaseHTTPRequestHandler):
 def main():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     load_active_environment()
-    if os.environ.get("DNS_PROXY_ENABLED", "0") != "1":
-        raise ValueError("Set DNS_PROXY_ENABLED=1 for both bird and dns-proxy")
+    enabled = os.environ.get("DNS_PROXY_ENABLED", "0")
+    if enabled == "0":
+        # Portainer may recreate all three services after the integration was
+        # disabled from the panel. Stay idle without DNS/BGP workers or ports.
+        LOG.info("DNS integration is disabled")
+        threading.Event().wait()
+        return
+    if enabled != "1":
+        raise ValueError("DNS_PROXY_ENABLED must be 0 or 1")
     bind = str(ipaddress.IPv4Address(os.environ.get("DNS_PROXY_BIND") or os.environ.get("BIRD_IP", "127.0.0.1")))
     port = int(os.environ.get("DNS_PROXY_PORT", "53"))
     upstream = os.environ.get("ADGUARD_DNS", "192.168.88.16")

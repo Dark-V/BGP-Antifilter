@@ -65,6 +65,8 @@ def health_url(values):
 
 def check_health():
     load_active_environment()
+    if os.environ.get("DNS_PROXY_ENABLED", "0") == "0":
+        return
     with urllib.request.urlopen(health_url(os.environ), timeout=10) as reply:
         if json.load(reply).get("ready") is not True:
             raise RuntimeError("DNS proxy is not ready")
