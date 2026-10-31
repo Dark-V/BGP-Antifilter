@@ -528,6 +528,7 @@ def settings_payload():
         "settings_file": str(SETTINGS_FILE),
         "settings_env_file": str(SETTINGS_ENV_FILE),
         "application": settings_apply_payload(),
+        "pending_keys": sorted(key for key, value in active_settings().items() if effective[key] != value),
     }
 
 

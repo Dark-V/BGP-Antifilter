@@ -26,7 +26,7 @@ const dict = {
     downloadRoutes: "Download routes.conf", restartRequired: "restart", overridden: "changed",
     updateSettings: "Update", securitySettings: "Generation safety", birdSettings: "BIRD / BGP", dnsSettings: "AdGuard DNS integration",
     dnsSettingsHint: "Save keeps a draft. Apply starts or stops the DNS proxy and checks readiness. The DNS profile is managed automatically.",
-    settingsApplied: "Settings applied", settingsApplyPending: "Settings saved; applying and checking services…",
+    settingsApplied: "Settings applied", settingsApplyPending: "Settings saved; applying and checking services…", settingsSavedPending: "Saved; waiting for Apply",
     settingsRollbackOk: "Previous DNS / BGP configuration restored.", settingsRollbackFailed: "Recovery failed:",
     applySettings: "Apply now", applying: "Applying...", unsavedChanges: "Unsaved changes",
     noChanges: "No changes", backupSaved: "Backup", discardListChanges: "Discard unsaved list changes?",
@@ -101,7 +101,7 @@ const dict = {
     downloadRoutes: "Скачать routes.conf", restartRequired: "перезапуск", overridden: "изменено",
     updateSettings: "Обновление", securitySettings: "Безопасность генерации", birdSettings: "BIRD / BGP", dnsSettings: "Интеграция с AdGuard DNS",
     dnsSettingsHint: "Сохранить — оставить черновик. Применить — запустить или остановить DNS-прокси и проверить готовность. DNS-профиль включается автоматически.",
-    settingsApplied: "Настройки применены", settingsApplyPending: "Настройки сохранены; применяем и проверяем сервисы…",
+    settingsApplied: "Настройки применены", settingsApplyPending: "Настройки сохранены; применяем и проверяем сервисы…", settingsSavedPending: "Сохранено; ожидает применения",
     settingsRollbackOk: "Предыдущая конфигурация DNS / BGP восстановлена.", settingsRollbackFailed: "Восстановление не удалось:",
     applySettings: "Применить сейчас", applying: "Применяем...", unsavedChanges: "Есть несохраненные изменения",
     noChanges: "Изменений нет", backupSaved: "Бэкап", discardListChanges: "Отбросить несохраненные изменения списка?",
@@ -266,7 +266,7 @@ const dnsOptionLabels = {
   bgp: {ru: "После отправки обновления в BIRD", en: "After sending updates to BIRD"},
   bird: {ru: "После проверки маршрутов в BIRD", en: "After verifying routes in BIRD"},
   servfail: {ru: "Ошибка DNS (SERVFAIL), без IP", en: "DNS error (SERVFAIL), no IPs"},
-  forward: {ru: "Вернуть ответ AdGuard, допуская задержку маршрутов", en: "Return AdGuard's answer; routes may lag"},
+  forward: {ru: "Ответ AdGuard; маршруты могут опоздать", en: "Return AdGuard answer; routes may lag"},
 };
 const settingHints = {
   DNS_PROXY_BIND: {ru: "Пусто — использовать IP BIRD. Адрес должен принадлежать хосту с прокси.", en: "Empty uses BIRD IP. The address must belong to the proxy host."},
@@ -2077,10 +2077,10 @@ function renderSettings(data) {
     </article>
   `).join("");
   refreshSettingsDirtyState();
-  renderSettingsApplication(data.application || {});
+  renderSettingsApplication(data.application || {}, data.pending_keys || []);
 }
 
-function renderSettingsApplication(state) {
+function renderSettingsApplication(state, pendingKeys = []) {
   settingsApplying = Boolean(state.active);
   document.querySelectorAll("#settings-form input, #settings-form textarea, #settings-form select").forEach(input => { input.disabled = settingsApplying; });
   $("apply-settings-btn").disabled = settingsApplying;
@@ -2090,6 +2090,9 @@ function renderSettingsApplication(state) {
     $("settings-save-status").textContent = t("settingsApplyPending");
     setStatusTone($("settings-save-status"), "warn");
     pollSettingsApplication();
+  } else if (pendingKeys.length && state.ok !== false) {
+    $("settings-save-status").textContent = t("settingsSavedPending");
+    setStatusTone($("settings-save-status"), "warn");
   } else if (state.ok === true) {
     $("settings-save-status").textContent = t("settingsApplied");
     setStatusTone($("settings-save-status"), "ok");
@@ -2098,6 +2101,8 @@ function renderSettingsApplication(state) {
       ? `${t("settingsRollbackFailed")} ${state.rollback.error || ""}` : "";
     $("settings-save-status").textContent = `${t("failed")}: ${state.error || ""} ${recovery}`.trim();
     setStatusTone($("settings-save-status"), "fail");
+  } else {
+    $("settings-save-status").textContent = t("noChanges");
   }
 }
 
@@ -2130,7 +2135,8 @@ async function saveSettings() {
     });
     renderSettings(result);
     renderIcons();
-    refreshSettingsDirtyState(t("saved"), "ok");
+    refreshSettingsDirtyState((result.pending_keys || []).length ? t("settingsSavedPending") : t("saved"),
+                             (result.pending_keys || []).length ? "warn" : "ok");
     return true;
   } catch (err) {
     refreshSettingsDirtyState(`${t("failed")}: ${typeof err === "string" ? err : (err.error || err.message || "request failed")}`, "fail");

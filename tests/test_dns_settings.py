@@ -50,6 +50,7 @@ class DNSSettingsTests(unittest.TestCase):
         self.assertEqual(desired["DNS_PROXY_ENABLED"], "1")
         self.assertEqual(admin.active_settings()["DNS_PROXY_ENABLED"], "0")
         self.assertEqual(admin.command_environment()["DNS_PROXY_ENABLED"], "0")
+        self.assertIn("DNS_SYNC_MODE", admin.settings_payload()["pending_keys"])
         self.assertNotIn("DNS_PROXY_ENABLED=1", (self.root / "settings.env").read_text())
         with mock.patch.dict(os.environ):
             dns_settings.load_active_environment()
@@ -71,10 +72,13 @@ class DNSSettingsTests(unittest.TestCase):
 
     def test_sync_change_does_not_restart_bird_or_rebuild_routes(self):
         self.apply(self.save(DNS_PROXY_ENABLED="1"))
-        commands, reload_command = self.apply(self.save(DNS_SYNC_MODE="bird"))
+        desired = self.save(DNS_SYNC_MODE="bird")
+        self.assertIn("DNS_SYNC_MODE", admin.settings_payload()["pending_keys"])
+        commands, reload_command = self.apply(desired)
         self.assertFalse(any(args[-1] == "bird" for args in commands))
         self.assertIn(("up", "-d", "--no-deps", "--no-build", "dns-proxy"), commands)
         reload_command.assert_not_called()
+        self.assertFalse(admin.settings_payload()["pending_keys"])
 
     def test_disable_removes_dns_proxy_and_restores_static_source(self):
         self.apply(self.save(DNS_PROXY_ENABLED="1"))
