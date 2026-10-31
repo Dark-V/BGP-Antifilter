@@ -21,6 +21,12 @@ def parse_nameservers(value):
 
 
 def resolve_ipv4_addresses(domain, *, nameservers=None, timeout=DEFAULT_TIMEOUT):
+    # Numeric URL hosts already identify their destination. Querying an
+    # upstream for "127.0.0.1" can stall HTTP sources during bootstrap.
+    try:
+        return [str(ipaddress.IPv4Address(domain))]
+    except ipaddress.AddressValueError:
+        pass
     nameservers = list(nameservers or [])
     if not nameservers:
         return sorted({
