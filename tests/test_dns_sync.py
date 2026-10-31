@@ -186,10 +186,15 @@ class BirdConfirmationTests(unittest.TestCase):
 
     def test_bird_cli_errors_are_not_mistaken_for_absent_routes(self):
         for body in ("syntax error", "Access denied", "No such protocol"):
-            result = subprocess.CompletedProcess([], 0, self.header + body, "")
+            result = subprocess.CompletedProcess([], 0, "0001 " + self.header + "9001 " + body, "")
             with mock.patch.object(dns_sync.subprocess, "run", return_value=result):
                 with self.assertRaises(RuntimeError):
                     self.gate._bird(time.monotonic() + 1, "show", "route", "for", "1.1.1.1")
+
+    def test_numeric_status_does_not_reject_valid_protocol_names_containing_error(self):
+        result = subprocess.CompletedProcess([], 0, "0001 " + self.header + "2002-bgperror BGP master4 up Established\n", "")
+        with mock.patch.object(dns_sync.subprocess, "run", return_value=result):
+            self.assertIn("Established", self.gate._bird(time.monotonic() + 1, "show", "protocols", "bgperror"))
 
     def test_bird_cli_8001_exit_one_is_valid_route_absence_only(self):
         result = subprocess.CompletedProcess([], 1, "0001 BIRD 2.0.12 ready.\n0018 Access restricted\n8001 Network not found\n", "")

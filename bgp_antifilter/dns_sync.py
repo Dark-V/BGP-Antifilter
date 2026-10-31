@@ -60,8 +60,7 @@ class ReplyGate:
             if reply.returncode and not absent:
                 reply.check_returncode()
             output = re.sub(r"(?m)^\d{4}[ -]", "", reply.stdout)
-            if (any(code >= 8000 for code in codes) and not absent) or not re.search(r"BIRD .* ready\.", output) or re.search(
-                    r"(?i)(syntax error|access denied|unknown (?:command|protocol)|no such|cannot|error)", output):
+            if (any(code >= 8000 for code in codes) and not absent) or 1 not in codes or not re.search(r"BIRD .* ready\.", output):
                 raise RuntimeError("BIRD rejected the route confirmation query")
             return output
         finally:
