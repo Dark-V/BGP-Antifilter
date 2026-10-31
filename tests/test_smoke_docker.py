@@ -252,6 +252,12 @@ class DockerSmokeTests(unittest.TestCase):
         return json.loads(path.read_text(encoding="utf-8"))
 
     def test_portainer_stack_uses_embedded_config_and_named_volumes(self):
+        self.check_portainer_stack(existing_volume=False)
+
+    def test_portainer_stack_preserves_external_volume_and_proxy_on_apply(self):
+        self.check_portainer_stack(existing_volume=True)
+
+    def check_portainer_stack(self, existing_volume):
         def free_port():
             with socket.socket() as reservation:
                 reservation.bind(("127.0.0.1", 0))
@@ -275,6 +281,11 @@ class DockerSmokeTests(unittest.TestCase):
                     "ADGUARD_DNS_PORT": str(udp.server_address[1]), "DNS_PROXY_PORT": str(dns_port),
                     "DNS_PROXY_HEALTH_PORT": str(health_port), "DNS_BGP_PORT": str(bgp_port),
                     "HEALTHCHECK_REQUIRE_BGP": "0", "INCLUDE_GOOGLE_RANGES": "0", "DNS_RESOLVERS": "127.0.0.1"}
+        external_volume = self.project_name + "-legacy-data" if existing_volume else None
+        if existing_volume:
+            settings.update(BGP_DATA_VOLUME=external_volume, BGP_DATA_EXTERNAL="true", DNS_RESOLVERS="",
+                            HTTP_PROXY="http://127.0.0.1:1", HTTPS_PROXY="http://127.0.0.1:1",
+                            NO_PROXY="localhost,127.0.0.1", REQUIRE_ALL_URL_SOURCES="0")
         self.stack_env_file.write_text("\n".join(f"{key}={value}" for key, value in settings.items()) + "\n")
         self.compose_file.write_text((self.repo_root / "deploy/portainer-stack.yml").read_text())
         opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
@@ -298,7 +309,11 @@ class DockerSmokeTests(unittest.TestCase):
                 return state and not state.get("active")
             self.wait_until(finished, 60, "Embedded Portainer configuration did not apply")
             self.assertTrue(state.get("ok"), state)
+        created_external_volume = False
         try:
+            if external_volume:
+                subprocess.run(["docker", "volume", "create", external_volume], check=True, capture_output=True, text=True)
+                created_external_volume = True
             if not published_image:
                 subprocess.run(["docker", "build", "-q", "-t", "bgp-antifilter-bird:smoke", "-f", "deploy/Dockerfile", "."],
                                cwd=self.repo_root, check=True, capture_output=True, text=True)
@@ -326,6 +341,17 @@ class DockerSmokeTests(unittest.TestCase):
             desired["DNS_PROXY_ENABLED"] = "1"
             api("/api/settings", "PUT", {"values": desired})
             apply()
+            if existing_volume:
+                for service in ("bird", "dns-proxy"):
+                    cid = self.compose("ps", "-q", service).stdout.strip()
+                    info = json.loads(subprocess.check_output(["docker", "inspect", cid], text=True))[0]
+                    mounted = next(m for m in info["Mounts"] if m["Destination"] == "/etc/bird/generated")
+                    self.assertEqual(mounted["Name"], external_volume)
+                    env = dict(value.split("=", 1) for value in info["Config"]["Env"])
+                    self.assertEqual(env["HTTP_PROXY"], settings["HTTP_PROXY"])
+                    self.assertEqual(env["NO_PROXY"], settings["NO_PROXY"])
+                    self.assertEqual(env["DNS_RESOLVERS"], "")
+                    self.assertEqual(env["REQUIRE_ALL_URL_SOURCES"], "0")
             reply = dns.query.udp(dns.message.make_query("cdn.example.test", "A"), "127.0.0.1", port=dns_port, timeout=5)
             self.assertEqual(reply.rcode(), dns.rcode.NOERROR)
             self.assertIn("1.0.0.1/32", self.compose("exec", "-T", "bird", "birdc", "show", "route", "for", "1.0.0.1").stdout)
@@ -351,6 +377,8 @@ class DockerSmokeTests(unittest.TestCase):
                 server.shutdown()
                 server.server_close()
             self.compose("down", "--volumes", "--remove-orphans", check=False)
+            if created_external_volume:
+                subprocess.run(["docker", "volume", "rm", external_volume], check=False, capture_output=True, text=True)
 
     def test_admin_dns_settings_save_apply_ports_and_rollback(self):
         self.relative_mounts = True
