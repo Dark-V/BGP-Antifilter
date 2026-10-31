@@ -154,6 +154,7 @@ render_bird_config() {
 import os
 import string
 import sys
+from bgp_antifilter.bgp_feed import bird_route_source
 
 template_file, config_file = sys.argv[1:3]
 
@@ -161,7 +162,9 @@ with open(template_file, encoding="utf-8") as file:
     template = string.Template(file.read())
 
 with open(config_file, "w", encoding="utf-8") as file:
-    file.write(template.safe_substitute(os.environ))
+    values = dict(os.environ)
+    values["ROUTE_SOURCE_PROTOCOL"] = bird_route_source()
+    file.write(template.safe_substitute(values))
 PY
 }
 
@@ -183,6 +186,9 @@ update_routes() {
     fi
 
     echo "Routes prepared before BIRD startup"
+    if [ "${DNS_PROXY_ENABLED:-0}" = "1" ]; then
+      python3 -m bgp_antifilter.dns_routes "$ROUTES.dns.json" --no-configure
+    fi
   else
     echo "Route updater failed" >&2
     return 1
@@ -324,6 +330,8 @@ STARTUP_SNAPSHOT_AGE_SECONDS="$(printf '%s\n' "$startup_snapshot_values" | sed -
 if [ "$startup_mode" = "background-refresh" ]; then
   echo "Starting BIRD with existing route snapshot while refreshing routes in background"
   cp "$LAST_GOOD_ROUTES" "$ROUTES"
+  # In DNS mode the live feed restores its committed policy and leases from
+  # SQLite. Replaying the old JSON here could overwrite a newer pending update.
   GENERATION_ACTIVE=1
   GENERATION_KIND="startup"
   GENERATION_MESSAGE="Starting with previous routes while refreshing in background"

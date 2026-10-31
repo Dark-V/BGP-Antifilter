@@ -168,7 +168,7 @@ cleanup() {
   if [ "$lock_acquired" = "1" ]; then
     rmdir "$LOCK_DIR" 2>/dev/null || true
   fi
-  rm -f "$tmp_old" "$tmp_new"
+  rm -f "$tmp_old" "$tmp_new" "$tmp_new.dns.json"
 }
 trap cleanup EXIT
 
@@ -194,7 +194,9 @@ export ROUTES_FILE="$tmp_new"
 
 if ! /update-routes.py --output "$tmp_new" --status "$STATUS_FILE" --metrics "$METRICS_FILE"; then
   echo "Route updater failed, restoring previous routes" >&2
-  cp "$tmp_old" "$ROUTES"
+  if [ "${DNS_PROXY_ENABLED:-0}" != "1" ]; then
+    cp "$tmp_old" "$ROUTES"
+  fi
   LAST_UPDATE_SUCCESS=0
   LAST_UPDATE_FINISHED_AT_UNIX="$(date +%s)"
   DEGRADED=1
@@ -206,7 +208,9 @@ fi
 
 if [ ! -s "$tmp_new" ]; then
   echo "Generated route list is empty, restoring previous routes" >&2
-  cp "$tmp_old" "$ROUTES"
+  if [ "${DNS_PROXY_ENABLED:-0}" != "1" ]; then
+    cp "$tmp_old" "$ROUTES"
+  fi
   LAST_UPDATE_SUCCESS=0
   LAST_UPDATE_FINISHED_AT_UNIX="$(date +%s)"
   DEGRADED=1
@@ -216,19 +220,36 @@ if [ ! -s "$tmp_new" ]; then
   exit 1
 fi
 
-cp "$tmp_new" "$ROUTES"
+apply_routes() {
+  if [ "${DNS_PROXY_ENABLED:-0}" = "1" ]; then
+    # The worker merges durable observed IPs and publishes a BGP delta.
+    # No BIRD configure or DNS listener thread participates in this operation.
+    ROUTES_FILE="$ROUTES" python3 -m bgp_antifilter.dns_routes "$tmp_new.dns.json"
+  else
+    cp "$tmp_new" "$ROUTES"
+    birdc configure
+  fi
+}
 
-if birdc configure; then
-  echo "BIRD accepted updated routes"
-  cp "$tmp_new" "$LAST_GOOD_ROUTES"
+if apply_routes; then
+  if [ "${DNS_PROXY_ENABLED:-0}" = "1" ]; then
+    echo "Live BGP source accepted updated routes"
+  else
+    echo "BIRD accepted updated routes"
+  fi
+  if [ "${DNS_PROXY_ENABLED:-0}" != "1" ]; then
+    cp "$tmp_new" "$LAST_GOOD_ROUTES"
+  fi
   LAST_UPDATE_SUCCESS=1
   LAST_UPDATE_FINISHED_AT_UNIX="$(date +%s)"
   DEGRADED=0
   DEGRADED_REASON=""
 else
   echo "BIRD rejected updated routes, restoring previous routes" >&2
-  cp "$tmp_old" "$ROUTES"
-  birdc configure || true
+  if [ "${DNS_PROXY_ENABLED:-0}" != "1" ]; then
+    cp "$tmp_old" "$ROUTES"
+    birdc configure || true
+  fi
   LAST_UPDATE_SUCCESS=0
   LAST_UPDATE_FINISHED_AT_UNIX="$(date +%s)"
   DEGRADED=1

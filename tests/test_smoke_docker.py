@@ -1,5 +1,7 @@
 import json
+import http.cookiejar
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -8,8 +10,18 @@ import textwrap
 import threading
 import time
 import unittest
+import socket
+import urllib.error
+import urllib.request
+from unittest import mock
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+
+import dns.message
+import dns.query
+import dns.rcode
+import dns.rrset
+from bgp_antifilter import dns_proxy, update_routes
 
 
 class RouteSourceServer(ThreadingHTTPServer):
@@ -77,7 +89,7 @@ class DockerSmokeTests(unittest.TestCase):
             self.tmp.cleanup()
 
     def compose_yaml(self):
-        generated = self.generated_dir.as_posix()
+        generated = "./generated" if getattr(self, "relative_mounts", False) else self.generated_dir.as_posix()
         template = (self.repo_root / "deploy" / "bird.conf.template").as_posix()
         context = self.repo_root.as_posix()
         return textwrap.dedent(
@@ -116,10 +128,68 @@ class DockerSmokeTests(unittest.TestCase):
                   BGP_PROTOCOL: "mikrotik"
                   ADMIN_ENABLED: "0"
                   ADMIN_PORT: "18080"
+                  DNS_PROXY_ENABLED: "{int(getattr(self, 'dns_enabled', False))}"
+                  DNS_BGP_PORT: "{getattr(self, 'bgp_feed_port', 1179)}"
                   RUNTIME_FILE: /etc/bird/generated/runtime.json
                   CONTAINER_LOG_FILE: /etc/bird/generated/container.log
                   SETTINGS_FILE: /etc/bird/generated/settings.json
                   SETTINGS_ENV_FILE: /etc/bird/generated/settings.env
+              dns-proxy:
+                profiles: ["dns"]
+                image: "bgp-antifilter-bird:smoke"
+                entrypoint: ["/usr/bin/tini", "--", "python3", "-m", "bgp_antifilter.dns_proxy"]
+                network_mode: host
+                volumes:
+                  - "{generated}:/etc/bird/generated"
+                  - bird-run:/run/bird
+                environment:
+                  DNS_PROXY_ENABLED: "{int(getattr(self, 'dns_enabled', False))}"
+                  MY_AS: "64500"
+                  DNS_BGP_PORT: "{getattr(self, 'bgp_feed_port', 1179)}"
+                  DNS_ROUTE_GRACE: "0"
+                  DNS_SYNC_MODE: "{getattr(self, 'dns_sync_mode', 'async')}"
+                  DNS_SYNC_TIMEOUT: "1"
+                  DNS_SYNC_ON_TIMEOUT: "{getattr(self, 'dns_sync_on_timeout', 'servfail')}"
+                  DNS_PROXY_BIND: "127.0.0.1"
+                  DNS_PROXY_PORT: "{getattr(self, 'dns_port', 15353)}"
+                  DNS_PROXY_HEALTH_PORT: "{getattr(self, 'dns_health_port', 18053)}"
+                  ADGUARD_DNS: "127.0.0.1"
+                  ADGUARD_DNS_PORT: "{getattr(self, 'upstream_port', 15354)}"
+                  HEALTHCHECK_REQUIRE_BGP: "0"
+                depends_on: [bird]
+              admin:
+                profiles: ["admin-test"]
+                image: "bgp-antifilter-bird:smoke"
+                entrypoint: ["/usr/bin/tini", "--", "/admin-server.py"]
+                ports: ["127.0.0.1:{getattr(self, 'admin_port', 18081)}:18080"]
+                volumes:
+                  - "{generated}:/etc/bird/generated"
+                  - bird-run:/run/bird
+                  - "{context}:/workspace"
+                  - "{self.compose_file.as_posix()}:/test-compose.yml:ro"
+                  - /var/run/docker.sock:/var/run/docker.sock
+                environment:
+                  ADMIN_PASSWORD: smoke-password
+                  ADMIN_ENABLED: "1"
+                  ADMIN_PORT: "18080"
+                  COMPOSE_FILE: /test-compose.yml
+                  WORKSPACE_DIR: /workspace
+                  MY_AS: "64500"
+                  MT_AS: "65455"
+                  MT_IP: "192.168.55.1"
+                  BIRD_IP: "192.168.55.5"
+                  ROUTER_ID: "192.168.55.5"
+                  BGP_COMMUNITY: "65432,500"
+                  HEALTHCHECK_REQUIRE_BGP: "0"
+                  DNS_PROXY_ENABLED: "0"
+                  UPDATE_INTERVAL: "86400"
+                  INCLUDE_GOOGLE_RANGES: "0"
+                  LISTS_FILE: /etc/bird/generated/config/lists.txt
+                  DOMAIN_LIST_URLS_FILE: /etc/bird/generated/config/domain-list-urls.txt
+                  INCLUDE_ASNS_FILE: /etc/bird/generated/config/include-asns.txt
+                  INCLUDE_DOMAINS_FILE: /etc/bird/generated/config/include-domains.txt
+                  EXCLUDE_DOMAINS_FILE: /etc/bird/generated/config/exclude-domains.txt
+                depends_on: [bird]
             volumes:
               bird-run:
             """
@@ -167,14 +237,278 @@ class DockerSmokeTests(unittest.TestCase):
             except AssertionError as exc:
                 last_error = exc
             time.sleep(interval)
-        logs = self.compose("logs", "bird", check=False)
+        logs = self.compose("logs", "bird", "dns-proxy", check=False)
         details = logs.stdout[-4000:] if logs.stdout else ""
+        path = self.generated_dir / "container.log"
+        if path.exists():
+            details += "\n" + path.read_text(encoding="utf-8", errors="replace")[-8000:]
+        details += "\n" + getattr(self, "last_ready_error", "")
         if last_error is not None:
             raise AssertionError(f"{message}: {last_error}\n{details}".strip())
         raise AssertionError(f"{message}\n{details}".strip())
 
     def read_json(self, path):
         return json.loads(path.read_text(encoding="utf-8"))
+
+    def test_admin_dns_settings_save_apply_ports_and_rollback(self):
+        self.relative_mounts = True
+        self.server_state["body"] = "93.184.216.0/24\n"
+        (self.config_dir / "include-domains.txt").write_text("example.test\n")
+        def free_port():
+            with socket.socket() as reservation:
+                reservation.bind(("127.0.0.1", 0))
+                return reservation.getsockname()[1]
+        self.admin_port = free_port()
+        dns_port, health_port, bgp_port = free_port(), free_port(), free_port()
+        upstream = dns_proxy.Proxy(mock.Mock(), "127.0.0.1")
+        def answer(query, tcp=False):
+            reply = dns.message.make_response(query)
+            reply.answer.append(dns.rrset.from_text(query.question[0].name, 60, "IN", "A", "1.1.1.1"))
+            return reply
+        upstream.exchange = answer
+        udp = dns_proxy.UDPServer(("127.0.0.1", 0), dns_proxy.UDPHandler, upstream)
+        tcp = dns_proxy.TCPServer(udp.server_address, dns_proxy.TCPHandler, upstream)
+        for server in (udp, tcp):
+            threading.Thread(target=server.serve_forever, daemon=True).start()
+        opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
+        base = f"http://127.0.0.1:{self.admin_port}"
+        def api(path, method="GET", body=None):
+            request = urllib.request.Request(base + path, data=json.dumps(body).encode() if body is not None else None,
+                                             method=method, headers={"Content-Type": "application/json"})
+            with opener.open(request, timeout=15) as response:
+                return json.load(response)
+        def login():
+            try:
+                return api("/api/login", "POST", {"password": "smoke-password"}).get("ok")
+            except (OSError, ValueError):
+                return False
+        def apply():
+            api("/api/actions/apply-settings", "POST", {})
+            state = {}
+            def completed():
+                nonlocal state
+                state = api("/api/settings").get("application", {})
+                return state and not state.get("active")
+            self.wait_until(completed, 150, "Panel settings application did not finish")
+            return state
+        def lookup(port):
+            query = dns.message.make_query("cdn.example.test", "A")
+            return dns.query.udp(query, "127.0.0.1", port=port, timeout=3)
+        try:
+            self.compose_file.write_text(self.compose_yaml(), encoding="utf-8")
+            self.compose("up", "-d", "--build", "bird", "admin")
+            self.wait_until(login, 30, "Admin API did not start")
+            self.wait_until(lambda: not api("/api/status").get("runtime", {}).get("generation_active"), 30, "Initial generation did not finish")
+            data = api("/api/settings")
+            self.assertEqual(len(next(section for section in data["sections"] if section["id"] == "dns")["items"]), 13)
+            desired = data["values"]
+            desired.update(DNS_PROXY_ENABLED="1", DNS_PROXY_BIND="127.0.0.1", ADGUARD_DNS="127.0.0.1",
+                           ADGUARD_DNS_PORT=str(udp.server_address[1]), DNS_PROXY_PORT=str(dns_port),
+                           DNS_PROXY_HEALTH_PORT=str(health_port), DNS_BGP_PORT=str(bgp_port),
+                           DNS_PROXY_ALLOWED_CLIENTS="127.0.0.1/32", DNS_SYNC_MODE="bird", DNS_SYNC_TIMEOUT="0.5",
+                           DNS_SYNC_ON_TIMEOUT="servfail", DNS_ROUTE_GRACE="2")
+            api("/api/settings", "PUT", {"values": desired})
+            self.assertNotIn("DNS_PROXY_ENABLED=1", (self.generated_dir / "settings.env").read_text())
+            self.assertFalse(self.compose("ps", "-q", "dns-proxy").stdout.strip(), "Save activated the proxy")
+            self.assertTrue(apply().get("ok"))
+            self.assertEqual(lookup(dns_port).rcode(), dns.rcode.NOERROR)
+            self.assertIn("1.1.1.1/32", self.compose("exec", "-T", "bird", "birdc", "show", "route", "for", "1.1.1.1").stdout)
+            bird_id = self.compose("ps", "-q", "bird").stdout.strip()
+            desired.update(DNS_SYNC_MODE="async", DNS_SYNC_TIMEOUT="0.2", DNS_SYNC_ON_TIMEOUT="forward")
+            api("/api/settings", "PUT", {"values": desired})
+            self.assertTrue(apply().get("ok"))
+            self.assertEqual(self.compose("ps", "-q", "bird").stdout.strip(), bird_id, "Sync change restarted BIRD")
+            dns_port, health_port = free_port(), free_port()
+            desired.update(DNS_PROXY_PORT=str(dns_port), DNS_PROXY_HEALTH_PORT=str(health_port))
+            api("/api/settings", "PUT", {"values": desired})
+            self.assertTrue(apply().get("ok"))
+            self.assertEqual(lookup(dns_port).rcode(), dns.rcode.NOERROR)
+            with urllib.request.urlopen(f"http://127.0.0.1:{health_port}/ready", timeout=5) as response:
+                self.assertTrue(json.load(response)["ready"])
+            desired["DNS_PROXY_BIND"] = "198.51.100.254"  # Not an address of this host.
+            api("/api/settings", "PUT", {"values": desired})
+            failed = apply()
+            self.assertFalse(failed["ok"])
+            self.assertTrue(failed["rollback"]["ok"], failed)
+            self.assertEqual(lookup(dns_port).rcode(), dns.rcode.NOERROR, "Rollback did not restore working DNS")
+            self.assertEqual(api("/api/settings")["values"]["DNS_PROXY_BIND"], "198.51.100.254", "Saved draft was lost")
+            desired.update(DNS_PROXY_ENABLED="0", DNS_PROXY_BIND="127.0.0.1")
+            api("/api/settings", "PUT", {"values": desired})
+            self.assertTrue(apply().get("ok"))
+            self.assertFalse(self.compose("ps", "-q", "dns-proxy").stdout.strip())
+            self.assertIn("static_antifilter", self.compose("exec", "-T", "bird", "birdc", "show", "protocols").stdout)
+        except Exception:
+            print(self.compose("logs", "admin", "bird", "dns-proxy", check=False).stdout[-14000:])
+            raise
+        finally:
+            for server in (udp, tcp):
+                server.shutdown()
+                server.server_close()
+
+    def test_dns_proxy_applies_real_bird_routes_and_reports_bird_outage(self):
+        self.dns_enabled = True
+        self.server_state["body"] = "93.184.216.0/24\n"
+        upstream = dns_proxy.Proxy(mock.Mock(), "127.0.0.1")
+        answer_address = ["1.1.1.1"]
+
+        def answer(query, tcp=False):
+            result = dns.message.make_response(query)
+            if query.question[0].name.to_text() == "alias.example.test.":
+                result.answer.append(dns.rrset.from_text(query.question[0].name, 60, "IN", "CNAME", "edge.other.test."))
+            elif query.question[0].name.to_text() == "direct.example.test.":
+                result.answer.append(dns.rrset.from_text(query.question[0].name, 1, "IN", "A", "93.184.216.34"))
+            else:
+                result.answer.append(dns.rrset.from_text(query.question[0].name, 60, "IN", "A", answer_address[0]))
+            return result
+
+        upstream.exchange = answer
+        udp = dns_proxy.UDPServer(("127.0.0.1", 0), dns_proxy.UDPHandler, upstream)
+        tcp = dns_proxy.TCPServer(udp.server_address, dns_proxy.TCPHandler, upstream)
+        self.upstream_port = udp.server_address[1]
+        for server in (udp, tcp):
+            threading.Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            with socket.socket() as reservation:
+                reservation.bind(("127.0.0.1", 0))
+                self.dns_port = reservation.getsockname()[1]
+            with socket.socket() as reservation:
+                reservation.bind(("127.0.0.1", 0))
+                self.dns_health_port = reservation.getsockname()[1]
+            with socket.socket() as reservation:
+                reservation.bind(("127.0.0.1", 0))
+                self.bgp_feed_port = reservation.getsockname()[1]
+            (self.config_dir / "include-domains.txt").write_text("example.test\n", encoding="utf-8")
+            (self.config_dir / "exclude-domains.txt").write_text("direct.example.test\n", encoding="utf-8")
+            cache = self.generated_dir / "cache"
+            cache.mkdir(exist_ok=True)
+            update_routes.cache_path(cache, "exclude-domain", "direct.example.test").write_text("93.184.216.254/32\n", encoding="utf-8")
+            self.compose_file.write_text(self.compose_yaml(), encoding="utf-8")
+            self.compose("up", "-d", "--build", "bird", "dns-proxy")
+            ready_url = f"http://127.0.0.1:{self.dns_health_port}/ready"
+
+            def ready():
+                with urllib.request.urlopen(ready_url, timeout=5) as reply:
+                    return json.load(reply)["ready"]
+
+            def ready_without_errors():
+                try:
+                    return ready()
+                except urllib.error.HTTPError as exc:
+                    self.last_ready_error = exc.read().decode("utf-8", errors="replace")
+                    exc.close()
+                    return False
+                except (OSError, ValueError):
+                    return False
+
+            self.wait_until(ready_without_errors, 45, "DNS proxy did not become ready")
+            def route_present(address):
+                table = self.compose("exec", "-T", "bird", "birdc", "show", "route", "for", address, check=False).stdout
+                return bool(re.search(r"(?m)^\d+\.\d+\.\d+\.\d+/\d+\s", table))
+
+            def reconfigured_at():
+                status = self.compose("exec", "-T", "bird", "birdc", "show", "status").stdout
+                return next(line for line in status.splitlines() if "Last reconfiguration" in line)
+
+            initial_configure_time = reconfigured_at()
+            query = dns.message.make_query("cdn.example.test", "A")
+            reply = dns.query.udp(query, "127.0.0.1", port=self.dns_port, timeout=5)
+            self.assertEqual(reply.answer[0][0].address, "1.1.1.1")
+            self.wait_until(lambda: route_present("1.1.1.1"), 5, "New IP was not advertised by the local BGP feed")
+            answer_address[0] = "1.1.1.2"
+            reply = dns.query.tcp(query, "127.0.0.1", port=self.dns_port, timeout=5)
+            self.assertEqual(reply.answer[0][0].address, "1.1.1.2")
+            self.wait_until(lambda: route_present("1.1.1.2"), 5, "Second IP was not advertised")
+            self.assertNotIn("1.1.1.2/32", (self.generated_dir / "routes.conf").read_text(), "DNS rewrote the full route snapshot")
+            excluded = dns.message.make_query("direct.example.test", "A")
+            dns.query.udp(excluded, "127.0.0.1", port=self.dns_port, timeout=5)
+            self.wait_until(lambda: not route_present("93.184.216.34"), 0.9, "Live exclusion did not split the containing prefix", interval=0.03)
+            self.wait_until(lambda: route_present("93.184.216.34"), 5, "Expired exclusion was not withdrawn")
+            # A full reload must preserve the exact addresses already served.
+            self.compose("exec", "-T", "bird", "/reload-routes.sh")
+            self.assertIn("1.1.1.2/32", (self.generated_dir / "routes.conf").read_text())
+            self.assertEqual(reconfigured_at(), initial_configure_time, "A DNS/full-policy update called birdc configure")
+            # A separate lookup outside the include suffix must inherit its
+            # original domain's scope, even after restarting the DNS process.
+            alias_query = dns.message.make_query("alias.example.test", "A")
+            alias_reply = dns.query.udp(alias_query, "127.0.0.1", port=self.dns_port, timeout=5)
+            self.assertEqual(alias_reply.answer[0].rdtype, dns.rdatatype.CNAME)
+            def alias_persisted():
+                result = self.compose("exec", "-T", "dns-proxy", "python3", "-c",
+                                      "import sqlite3; d=sqlite3.connect('/etc/bird/generated/dns-cache.sqlite3'); print(d.execute(\"SELECT count(*) FROM aliases WHERE name='edge.other.test'\").fetchone()[0])")
+                return result.stdout.strip() == "1"
+            self.wait_until(alias_persisted, 5, "Alias observation was not persisted")
+            self.compose("restart", "dns-proxy")
+            self.wait_until(ready_without_errors, 20, "DNS proxy did not recover after restart")
+            answer_address[0] = "1.0.0.1"
+            target_query = dns.message.make_query("edge.other.test", "A")
+            target_reply = dns.query.tcp(target_query, "127.0.0.1", port=self.dns_port, timeout=5)
+            self.assertEqual(target_reply.answer[0][0].address, "1.0.0.1")
+            self.wait_until(lambda: route_present("1.0.0.1"), 5, "Persistent alias did not produce a live BGP route")
+            self.compose("stop", "bird")
+            with self.assertRaises(urllib.error.HTTPError) as failed:
+                ready()
+            self.assertEqual(failed.exception.code, 503)
+            failed.exception.close()
+            answer_address[0] = "1.1.1.3"
+            reply = dns.query.udp(query, "127.0.0.1", port=self.dns_port, timeout=5)
+            self.assertEqual(reply.rcode(), dns.rcode.NOERROR, "A route outage delayed/replaced the valid DNS response")
+            self.compose("start", "bird")
+            self.wait_until(ready_without_errors, 30, "Local BGP feed did not reconnect after BIRD restart")
+            self.wait_until(lambda: route_present("1.1.1.3"), 5, "IP learned during BIRD outage was not replayed")
+            strict_configure_time = reconfigured_at()
+            # Enable BIRD confirmation. The DNS response itself must now be
+            # gated on the real RIB, without a subsequent polling allowance.
+            self.dns_sync_mode = "bird"
+            self.compose_file.write_text(self.compose_yaml(), encoding="utf-8")
+            self.compose("up", "-d", "--no-deps", "--force-recreate", "dns-proxy")
+            self.wait_until(ready_without_errors, 20, "Synchronous DNS proxy did not recover")
+            answer_address[0] = "1.1.1.4"
+            reply = dns.query.udp(query, "127.0.0.1", port=self.dns_port, timeout=5)
+            self.assertEqual(reply.rcode(), dns.rcode.NOERROR)
+            self.assertEqual(reply.answer[0][0].address, "1.1.1.4")
+            self.assertTrue(route_present("1.1.1.4"), "DNS arrived before the route was installed in BIRD")
+            reply = dns.query.tcp(excluded, "127.0.0.1", port=self.dns_port, timeout=5)
+            self.assertEqual(reply.rcode(), dns.rcode.NOERROR,
+                             self.compose("logs", "dns-proxy", check=False).stdout[-5000:] if reply.rcode() else "")
+            self.assertFalse(route_present("93.184.216.34"), "DNS arrived before BIRD applied the exclusion")
+            # Execute the real export filter even though the smoke test has
+            # no external MikroTik peer/channel. Check a positive control too.
+            for value, wanted in (("198.18.0.1", False), ("1.1.1.4", True)):
+                filtered = self.compose("exec", "-T", "bird", "birdc", "show", "route", "for", value,
+                                        "filter", "export_to_mikrotik").stdout
+                self.assertEqual(value + "/32" in filtered, wanted, "Unexpected MikroTik export filter result")
+            self.assertEqual(reconfigured_at(), strict_configure_time)
+            self.compose("stop", "bird")
+            answer_address[0] = "1.1.1.5"
+            reply = dns.query.udp(query, "127.0.0.1", port=self.dns_port, timeout=5)
+            self.assertEqual(reply.rcode(), dns.rcode.SERVFAIL, "Strict synchronization leaked a new IP during BIRD outage")
+            self.assertFalse(reply.answer)
+            unrelated = dns.message.make_query("unrelated.test", "A")
+            reply = dns.query.tcp(unrelated, "127.0.0.1", port=self.dns_port, timeout=5)
+            self.assertEqual(reply.rcode(), dns.rcode.NOERROR, "Unselected domain unnecessarily waited for BGP")
+            self.dns_sync_on_timeout = "forward"
+            self.compose_file.write_text(self.compose_yaml(), encoding="utf-8")
+            self.compose("up", "-d", "--no-deps", "--force-recreate", "dns-proxy")
+
+            def forwarding_after_timeout():
+                try:
+                    return dns.query.tcp(query, "127.0.0.1", port=self.dns_port, timeout=3).rcode() == dns.rcode.NOERROR
+                except (OSError, dns.exception.DNSException):
+                    return False
+
+            self.wait_until(forwarding_after_timeout, 10, "Configured forward fallback did not return AdGuard's answer")
+            self.compose("start", "bird")
+            self.wait_until(ready_without_errors, 30, "Synchronous source did not reconnect")
+            self.assertTrue(route_present("1.1.1.5"), "Failed/forwarded sync observation was lost")
+        except Exception:
+            print(self.compose("logs", "bird", "dns-proxy", check=False).stdout[-10000:])
+            for value in ("198.18.0.1", "1.1.1.4", "93.184.216.34"):
+                print(self.compose("exec", "-T", "bird", "birdc", "-v", "-r", "show", "route", "for", value, "all", check=False).stdout)
+            raise
+        finally:
+            for server in (udp, tcp):
+                server.shutdown()
+                server.server_close()
 
     def test_restart_uses_previous_snapshot_until_background_refresh_completes(self):
         old_route = "route 192.0.2.0/24 blackhole;"
@@ -234,6 +568,14 @@ class DockerSmokeTests(unittest.TestCase):
             lambda: status_file.exists() and self.read_json(status_file)["success"] is True,
             timeout=15,
             message="Background refresh did not finish successfully",
+        )
+        # Snapshots/status are committed before the final runtime record.
+        self.wait_until(
+            lambda: runtime_file.exists() and self.read_json(runtime_file).get("last_update_reason") == "startup"
+            and self.read_json(runtime_file).get("last_update_success") is True
+            and not self.read_json(runtime_file).get("generation_active"),
+            timeout=15,
+            message="Background refresh did not publish completed runtime state",
         )
         runtime = self.read_json(runtime_file)
         self.assertFalse(runtime.get("generation_active"))

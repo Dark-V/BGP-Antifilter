@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+- Added an optional AdGuard UDP/TCP DNS proxy that returns answers immediately
+  and places observations into a bounded background queue. Route failures and
+  overload degrade readiness while valid DNS answers continue to be served.
+- Persist observed IPv4/TTL and CNAME/HTTPS/SVCB alias state in SQLite WAL;
+  scheduled source updates merge active observations into the new snapshot.
+- Send incremental IPv4 announcements/withdrawals to BIRD over loopback iBGP,
+  without NET_ADMIN, Linux route changes or per-query birdc configure. A live
+  exclusion updates only its covering prefix; TTL renewals do not rebuild the RIB.
+- Restore durable state before opening the BGP session, replay routes after
+  reconnect, and preserve shared-address ownership across TTL expiry/full updates.
+- Added read-only readiness checks and a RouterOS script generator for explicit
+  proxy/direct-AdGuard failover with recovery hysteresis, plus setup documentation.
+- Added wire, persistence, overload, incremental-index, and real-BIRD Docker tests.
+
 ## 0.4.4 - 2026-07-07
 
 - Added a public `/status.json` endpoint without authentication that exposes only compact operational counters: generated route count, time since the last generation, generation duration, and admin-server uptime.

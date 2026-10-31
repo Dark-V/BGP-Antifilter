@@ -1,4 +1,8 @@
 # BGP Antifilter
+
+Интеграция с AdGuard по фактическим DNS-ответам и автоматическое переключение
+MikroTik напрямую на AdGuard при отказе прокси: [настройка](docs/adguard-dns.md).
+
 ![Python](https://img.shields.io/badge/python-3.x-blue)
 ![Debian](https://img.shields.io/badge/debian-bookworm-a81d33)
 ![BIRD](https://img.shields.io/badge/BIRD-2.x-green)
