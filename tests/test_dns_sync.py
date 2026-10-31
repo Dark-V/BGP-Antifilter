@@ -196,6 +196,15 @@ class BirdConfirmationTests(unittest.TestCase):
         with mock.patch.object(dns_sync.subprocess, "run", return_value=result):
             self.assertIn("Established", self.gate._bird(time.monotonic() + 1, "show", "protocols", "bgperror"))
 
+    def test_verbose_continuation_rows_confirm_real_route_and_absence(self):
+        prefix = "0001 BIRD 2.0.12 ready.\n0018 Access restricted\n1007-Table master4:\n"
+        marker = prefix + f"     198.18.0.1/32 blackhole [dns_live 12:00] * (100)\n     \tBGP.large_community: (64500, 123, 0) (64500, {123 ^ 0xffffffff}, 7)\n"
+        route = prefix + "     93.184.216.0/24 blackhole [dns_live 12:00] * (100)\n"
+        absent = "0001 BIRD 2.0.12 ready.\n0018 Access restricted\n8001 Network not found\n"
+        results = [subprocess.CompletedProcess([], code, body, "") for code, body in ((0, marker), (0, route), (1, absent))]
+        with mock.patch.object(dns_sync.subprocess, "run", side_effect=results):
+            self.assertTrue(self.gate._confirmed(self.receipt, time.monotonic() + 1))
+
     def test_bird_cli_8001_exit_one_is_valid_route_absence_only(self):
         result = subprocess.CompletedProcess([], 1, "0001 BIRD 2.0.12 ready.\n0018 Access restricted\n8001 Network not found\n", "")
         with mock.patch.object(dns_sync.subprocess, "run", return_value=result):

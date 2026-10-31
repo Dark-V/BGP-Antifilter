@@ -59,7 +59,9 @@ class ReplyGate:
                       and codes and codes[-1] == 8001 and all(code < 8000 or code == 8001 for code in codes))
             if reply.returncode and not absent:
                 reply.check_returncode()
-            output = re.sub(r"(?m)^\d{4}[ -]", "", reply.stdout)
+            # birdc -v prefixes continuation rows with five spaces instead of
+            # repeating their numeric code (client/client.c:server_got_reply).
+            output = re.sub(r"(?m)^(?:\d{4}[ -]| {5})", "", reply.stdout)
             if (any(code >= 8000 for code in codes) and not absent) or 1 not in codes or not re.search(r"BIRD .* ready\.", output):
                 raise RuntimeError("BIRD rejected the route confirmation query")
             return output
