@@ -23,6 +23,7 @@ services:
       ROUTER_ID: "${ROUTER_ID:-192.168.55.5}"
       BGP_COMMUNITY: "${BGP_COMMUNITY:-65432,500}"
       DNS_PROXY_ENABLED: "${DNS_PROXY_ENABLED:-0}"
+      DNS_BGP_PORT: "${DNS_BGP_PORT:-1179}"
       LISTS_FILE: /etc/bird/generated/config/lists.txt
       DOMAIN_LIST_URLS_FILE: /etc/bird/generated/config/domain-list-urls.txt
       INCLUDE_ASNS_FILE: /etc/bird/generated/config/include-asns.txt
@@ -122,6 +123,8 @@ services:
       - bird-run:/run/bird
     environment:
       DNS_PROXY_BIND: "${DNS_PROXY_BIND:-${BIRD_IP:-192.168.55.5}}"
+      MY_AS: "${MY_AS:-64500}"
+      DNS_BGP_PORT: "${DNS_BGP_PORT:-1179}"
       DNS_PROXY_ENABLED: "${DNS_PROXY_ENABLED:-0}"
       DNS_PROXY_PORT: "${DNS_PROXY_PORT:-53}"
       DNS_PROXY_HEALTH_PORT: "${DNS_PROXY_HEALTH_PORT:-8053}"

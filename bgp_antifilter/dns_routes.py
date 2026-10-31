@@ -320,6 +320,10 @@ def main():
     parser.add_argument("policy")
     parser.add_argument("--no-configure", action="store_true")
     args = parser.parse_args()
+    if os.environ.get("DNS_PROXY_ENABLED", "0") == "1":
+        from .live_routes import install_policy
+        install_policy(args.policy)
+        return
     manager = RouteManager()
     manager.install(json.loads(Path(args.policy).read_text(encoding="utf-8")), configure=not args.no_configure)
 

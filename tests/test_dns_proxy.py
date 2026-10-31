@@ -197,12 +197,12 @@ class WireTests(unittest.TestCase):
         self.assertEqual(events, ["applied"])
         self.assertEqual(dns.message.from_wire(answer).answer[0][0].address, "1.1.1.1")
 
-    def test_apply_failure_returns_servfail_instead_of_new_ip(self):
+    def test_route_failure_does_not_delay_or_replace_valid_dns_answer(self):
         self.manager.observe.side_effect = RuntimeError("BIRD rejected")
         wire = self.proxy.handle(dns.message.make_query("cdn.example.test", "A").to_wire(), "127.0.0.1")
         answer = dns.message.from_wire(wire)
-        self.assertEqual(answer.rcode(), dns.rcode.SERVFAIL)
-        self.assertFalse(answer.answer)
+        self.assertEqual(answer.rcode(), dns.rcode.NOERROR)
+        self.assertEqual(answer.answer[0][0].address, "1.1.1.1")
 
     def test_cname_and_https_hints_are_learned_without_unrelated_glue(self):
         message = response()

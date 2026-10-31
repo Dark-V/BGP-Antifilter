@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- DNS answers now return immediately while a bounded background worker saves
+  observed IP/TTL and alias state in SQLite and sends incremental IPv4 BGP
+  announcements/withdrawals to BIRD over loopback, without `NET_ADMIN` or Linux
+  route changes. Live IP changes no longer rebuild the complete route file.
+- Scheduled source updates merge active observed IPs into the new policy and
+  snapshot. Added reconnection replay, read-only readiness, overload handling,
+  and regression/integration tests for asynchronous DNS and live BGP updates.
+
 - Added an optional UDP/TCP DNS proxy for AdGuard: learn the IPv4 addresses
   actually served to clients, follow CNAME and HTTPS/SVCB IPv4 hints, retain
   concurrent answers by TTL, and preserve domain/IP exclusion precedence.

@@ -7,6 +7,9 @@ Generate RouterOS automatic direct-DNS failover with
 `python3 scripts/mikrotik-dns-failover.py --proxy YOUR_BIRD_IP --output generated/failover.rsc`.
 See the [setup and verification guide (Russian)](docs/adguard-dns.md).
 Install `requirements.txt` before running Python tests.
+DNS replies are immediate; a bounded background worker persists observations
+in SQLite and sends per-prefix IPv4 iBGP updates to BIRD over loopback. No
+`NET_ADMIN`, Linux routing-table changes or per-query `birdc configure` are needed.
 
 ![Python](https://img.shields.io/badge/python-3.x-blue)
 ![Debian](https://img.shields.io/badge/debian-bookworm-a81d33)

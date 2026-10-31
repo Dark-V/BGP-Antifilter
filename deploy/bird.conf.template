@@ -10,10 +10,7 @@ define BIRD_IP = ${BIRD_IP};
 protocol device {
 }
 
-protocol static static_antifilter {
-    ipv4;
-    include "/etc/bird/generated/routes.conf";
-}
+${ROUTE_SOURCE_PROTOCOL}
 
 filter export_to_mikrotik {
     bgp_community.add((${BGP_COMMUNITY}));

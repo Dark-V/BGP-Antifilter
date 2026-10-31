@@ -222,8 +222,8 @@ fi
 
 apply_routes() {
   if [ "${DNS_PROXY_ENABLED:-0}" = "1" ]; then
-    # Candidate collection happens under update.lock; only composition and
-    # birdc configure take the short lock shared with the live DNS writer.
+    # The worker merges durable observed IPs and publishes a BGP delta.
+    # No BIRD configure or DNS listener thread participates in this operation.
     ROUTES_FILE="$ROUTES" python3 -m bgp_antifilter.dns_routes "$tmp_new.dns.json"
   else
     cp "$tmp_new" "$ROUTES"
@@ -232,7 +232,11 @@ apply_routes() {
 }
 
 if apply_routes; then
-  echo "BIRD accepted updated routes"
+  if [ "${DNS_PROXY_ENABLED:-0}" = "1" ]; then
+    echo "Live BGP source accepted updated routes"
+  else
+    echo "BIRD accepted updated routes"
+  fi
   if [ "${DNS_PROXY_ENABLED:-0}" != "1" ]; then
     cp "$tmp_new" "$LAST_GOOD_ROUTES"
   fi
