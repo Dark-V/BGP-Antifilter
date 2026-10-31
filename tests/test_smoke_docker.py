@@ -268,7 +268,8 @@ class DockerSmokeTests(unittest.TestCase):
         for server in (udp, tcp):
             threading.Thread(target=server.serve_forever, daemon=True).start()
         self.stack_env_file = self.root / "stack.env"
-        settings = {"BGP_ANTIFILTER_IMAGE": "bgp-antifilter-bird:smoke", "ADMIN_PASSWORD": "smoke-password",
+        published_image = os.environ.get("PORTAINER_SMOKE_IMAGE")
+        settings = {"BGP_ANTIFILTER_IMAGE": published_image or "bgp-antifilter-bird:smoke", "ADMIN_PASSWORD": "smoke-password",
                     "BGP_ADMIN_CONTAINER": self.project_name + "-admin", "BIRD_IP": "127.0.0.1", "ROUTER_ID": "127.0.0.1",
                     "ADMIN_PORT": str(admin_port), "DNS_PROXY_ENABLED": "0", "ADGUARD_DNS": "127.0.0.1",
                     "ADGUARD_DNS_PORT": str(udp.server_address[1]), "DNS_PROXY_PORT": str(dns_port),
@@ -298,8 +299,9 @@ class DockerSmokeTests(unittest.TestCase):
             self.wait_until(finished, 120, "Embedded Portainer configuration did not apply")
             self.assertTrue(state.get("ok"), state)
         try:
-            subprocess.run(["docker", "build", "-q", "-t", "bgp-antifilter-bird:smoke", "-f", "deploy/Dockerfile", "."],
-                           cwd=self.repo_root, check=True, capture_output=True, text=True)
+            if not published_image:
+                subprocess.run(["docker", "build", "-q", "-t", "bgp-antifilter-bird:smoke", "-f", "deploy/Dockerfile", "."],
+                               cwd=self.repo_root, check=True, capture_output=True, text=True)
             seed = ("from pathlib import Path; from bgp_antifilter.update_routes import cache_path; "
                     "p=Path('/etc/bird/generated/config'); p.mkdir(parents=True,exist_ok=True); "
                     "[(p/n).write_text('') for n in ['domain-list-urls.txt','include-asns.txt','include-countries.txt','exclude-domains.txt']]; "
@@ -315,7 +317,8 @@ class DockerSmokeTests(unittest.TestCase):
                 cid = self.compose("ps", "-q", service).stdout.strip()
                 info = json.loads(subprocess.check_output(["docker", "inspect", cid], text=True))[0]
                 self.assertFalse(info["HostConfig"]["Privileged"])
-                self.assertIn("NET_ADMIN", info["HostConfig"]["CapDrop"])
+                self.assertIn("NET_ADMIN", [value.removeprefix("CAP_") for value in info["HostConfig"]["CapDrop"]])
+                self.assertNotIn("NET_ADMIN", [value.removeprefix("CAP_") for value in info["HostConfig"].get("CapAdd") or []])
                 self.assertFalse(any(mount["Type"] == "bind" and mount["Destination"] != "/var/run/docker.sock" for mount in info["Mounts"]))
             desired = api("/api/settings")["values"]
             desired["DNS_PROXY_ENABLED"] = "1"
