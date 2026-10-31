@@ -71,4 +71,4 @@ jobs:
           python -m pip install -r requirements.txt
           docker pull "$PORTAINER_SMOKE_IMAGE"
           docker tag "$PORTAINER_SMOKE_IMAGE" bgp-antifilter-bird:smoke
-          python -m unittest tests.test_smoke_docker.DockerSmokeTests.test_portainer_stack_uses_embedded_config_and_named_volumes -v
+          python -m unittest tests.test_smoke_docker.DockerSmokeTests.test_portainer_stack_uses_embedded_config_and_named_volumes tests.test_smoke_docker.DockerSmokeTests.test_portainer_stack_preserves_external_volume_and_proxy_on_apply -v

@@ -130,6 +130,7 @@ class LiveRoutes:
         self.last_progress = time.monotonic()
         self.policy = None
         self.index = None
+        self.bootstrap_routes = set()
         self.leases, self.aliases = {}, {}
         self.included, self.excluded = Counter(), Counter()
         self.lease_dirty, self.alias_dirty = {}, {}
@@ -321,7 +322,7 @@ class LiveRoutes:
         routes = index.cover.routes()  # Full scan only on policy load/update.
         text = "".join(f"    route {value} blackhole;\n" for value in sorted(routes, key=lambda x: (int(ipaddress.IPv4Network(x).network_address), ipaddress.IPv4Network(x).prefixlen)))
         self._persist()
-        previous = self.index.cover.routes() if self.index is not None else set()
+        previous = self.index.cover.routes() if self.index is not None else self.bootstrap_routes
         files = [self.directory / name for name in ("dns-policy.json", "routes.conf", "routes.last-good.conf")]
         backups = {path: path.read_text(encoding="utf-8") if path.exists() else None for path in files}
         try:
@@ -342,6 +343,7 @@ class LiveRoutes:
                     LOG.exception("Could not restore policy checkpoint %s", path)
             raise
         self.policy, self.index = policy, index
+        self.bootstrap_routes = set()
         self.include_roots, self.exclude_roots = includes, excludes
         self.included, self.excluded = included, excluded
         index.delta()  # Initial exclusions were incorporated in the full diff.
@@ -395,6 +397,25 @@ class LiveRoutes:
         self.alias_count = sum(map(len, self.aliases.values()))
         if policy is not None:
             self._new_policy(policy)
+        else:
+            # Upgrading a static deployment has a last-good snapshot but no
+            # DNS metadata yet. Keep its BGP routes while sources refresh;
+            # this is not a usable DNS policy and must not pass readiness.
+            snapshot = self.directory / "routes.last-good.conf"
+            if snapshot.exists():
+                routes = set()
+                for line in snapshot.read_text(encoding="utf-8").splitlines():
+                    line = line.strip()
+                    if not line or line.startswith("#"):
+                        continue
+                    fields = line.split()
+                    if len(fields) != 3 or fields[0] != "route" or fields[2] != "blackhole;":
+                        raise ValueError("Invalid last-good route snapshot")
+                    routes.add(str(ipaddress.IPv4Network(fields[1])))
+                self.bootstrap_routes = routes
+                self.publisher.update(routes, set())
+                if routes:
+                    LOG.info("Restored %d BGP routes from last-good snapshot; waiting for initial DNS policy", len(routes))
 
     def _run(self):
         owner = RouteManager(self.directory)

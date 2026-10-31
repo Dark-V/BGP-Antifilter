@@ -298,7 +298,13 @@ ensure_runtime_config_file "$EXCLUDE_DOMAINS_FILE" "exclude-domains.txt"
 touch "$ROUTES"
 touch "$LAST_GOOD_ROUTES"
 touch "$CONTAINER_LOG_FILE"
-exec >>"$CONTAINER_LOG_FILE" 2>&1
+# Keep the panel's durable journal and Docker/Portainer logs in sync.
+log_dir="$(mktemp -d)"
+mkfifo "$log_dir/output"
+tee -a "$CONTAINER_LOG_FILE" <"$log_dir/output" &
+exec >"$log_dir/output" 2>&1
+rm "$log_dir/output"
+rmdir "$log_dir"
 echo "container log started at $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
 
 export LISTS_FILE DOMAIN_LIST_URLS_FILE INCLUDE_ASNS_FILE INCLUDE_COUNTRIES_FILE INCLUDE_DOMAINS_FILE EXCLUDE_DOMAINS_FILE
