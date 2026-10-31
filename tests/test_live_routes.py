@@ -68,6 +68,26 @@ class Publisher:
 
 
 class IncrementalIndexTests(unittest.TestCase):
+    def test_static_upgrade_keeps_snapshot_until_full_policy_and_withdraws_old_prefixes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "routes.last-good.conf").write_text("    route 8.8.0.0/16 blackhole;\n")
+            publisher = Publisher()
+            manager = live_routes.LiveRoutes(root, publisher=publisher)
+            try:
+                manager.flush()
+                self.assertEqual(publisher.routes, {"8.8.0.0/16"})
+                self.assertIsNone(manager.policy)
+                with self.assertRaisesRegex(RuntimeError, "Waiting for initial route policy"):
+                    manager.refresh()
+                (root / "dns-policy.pending.json").write_text(json.dumps(policy()))
+                wait_for(lambda: manager.policy is not None)
+                manager.flush()
+                self.assertEqual(publisher.routes, {"93.184.216.0/24"})
+                self.assertEqual(manager.bootstrap_routes, set())
+            finally:
+                manager.close()
+
     def test_one_ip_changes_only_its_covering_prefix(self):
         config = policy()
         config["routes"].append("8.8.0.0/16")

@@ -326,9 +326,13 @@ class DockerSmokeTests(unittest.TestCase):
             self.compose("run", "--rm", "--no-deps", "--entrypoint", "python3", "bird", "-c", seed)
             self.compose("up", "-d")
             self.wait_until(login, 30, "Packaged admin UI did not start")
+            with urllib.request.urlopen(f"http://127.0.0.1:{admin_port}/assets/vendor/lucide.min.js", timeout=3) as asset:
+                self.assertIn("javascript", asset.headers["Content-Type"])
+                self.assertGreater(len(asset.read()), 10000)
             self.wait_until(lambda: not api("/api/status").get("runtime", {}).get("generation_active"), 30, "Packaged BIRD did not initialize")
             self.wait_until(lambda: "up and running" in self.compose("exec", "-T", "bird", "birdc", "show", "status", check=False).stdout,
                             30, "Packaged BIRD did not start")
+            self.assertIn("starting update", self.compose("logs", "bird").stdout)
             # No repository/host-directory mount is available in this stack.
             for service in ("bird", "dns-proxy", "admin"):
                 cid = self.compose("ps", "-q", service).stdout.strip()
@@ -641,6 +645,28 @@ class DockerSmokeTests(unittest.TestCase):
             for server in (udp, tcp):
                 server.shutdown()
                 server.server_close()
+
+    def test_static_upgrade_restores_bgp_before_initial_dns_policy(self):
+        self.dns_enabled = True
+        def free_port():
+            with socket.socket() as sock:
+                sock.bind(("127.0.0.1", 0))
+                return sock.getsockname()[1]
+        self.dns_port, self.dns_health_port, self.bgp_feed_port = [free_port() for _ in range(3)]
+        (self.generated_dir / "routes.last-good.conf").write_text("    route 192.0.2.0/24 blackhole;\n")
+        self.server_state.update(body="198.51.100.0/24\n", delay=12)
+        self.compose_file.write_text(self.compose_yaml())
+        self.compose("up", "-d", "--build", "bird", "dns-proxy")
+        self.wait_until(lambda: "192.0.2.0/24" in self.compose("exec", "-T", "bird", "birdc", "show", "route", check=False).stdout,
+                        8, "Cached routes were lost while initial sources were loading")
+        self.assertFalse((self.generated_dir / "dns-policy.json").exists())
+        with self.assertRaises(urllib.error.HTTPError) as pending:
+            urllib.request.urlopen(f"http://127.0.0.1:{self.dns_health_port}/ready", timeout=3)
+        self.assertIn("Waiting for initial route policy", pending.exception.read().decode())
+        self.wait_until(lambda: "198.51.100.0/24" in self.compose("exec", "-T", "bird", "birdc", "show", "route", check=False).stdout,
+                        30, "Fresh DNS policy did not replace the bootstrap routes")
+        routes = self.compose("exec", "-T", "bird", "birdc", "show", "route").stdout
+        self.assertNotIn("192.0.2.0/24", routes)
 
     def test_restart_uses_previous_snapshot_until_background_refresh_completes(self):
         old_route = "route 192.0.2.0/24 blackhole;"
