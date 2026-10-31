@@ -48,6 +48,7 @@ def message(kind, payload=b""):
 def open_message(asn, router_id, hold=30):
     asn2 = asn if asn <= 65535 else 23456
     caps = b"\x41\x04" + struct.pack("!I", asn)
+    caps += b"\x01\x04\x00\x01\x00\x01"  # multiprotocol IPv4 unicast
     # Restart time 120s, IPv4 unicast, forwarding state preserved. BIRD may
     # retain the old feed during a short restart until the replay's End-of-RIB.
     caps += b"\x40\x06" + struct.pack("!H", 120) + b"\x00\x01\x01\x80"

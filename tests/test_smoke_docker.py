@@ -200,8 +200,12 @@ class DockerSmokeTests(unittest.TestCase):
             except AssertionError as exc:
                 last_error = exc
             time.sleep(interval)
-        logs = self.compose("logs", "bird", check=False)
+        logs = self.compose("logs", "bird", "dns-proxy", check=False)
         details = logs.stdout[-4000:] if logs.stdout else ""
+        path = self.generated_dir / "container.log"
+        if path.exists():
+            details += "\n" + path.read_text(encoding="utf-8", errors="replace")[-8000:]
+        details += "\n" + getattr(self, "last_ready_error", "")
         if last_error is not None:
             raise AssertionError(f"{message}: {last_error}\n{details}".strip())
         raise AssertionError(f"{message}\n{details}".strip())
@@ -257,6 +261,10 @@ class DockerSmokeTests(unittest.TestCase):
             def ready_without_errors():
                 try:
                     return ready()
+                except urllib.error.HTTPError as exc:
+                    self.last_ready_error = exc.read().decode("utf-8", errors="replace")
+                    exc.close()
+                    return False
                 except (OSError, ValueError):
                     return False
 
