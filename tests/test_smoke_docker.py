@@ -371,6 +371,11 @@ class DockerSmokeTests(unittest.TestCase):
             self.compose("start", "bird")
             self.wait_until(ready_without_errors, 30, "Synchronous source did not reconnect")
             self.assertTrue(route_present("1.1.1.5"), "Failed/forwarded sync observation was lost")
+        except Exception:
+            print(self.compose("logs", "bird", "dns-proxy", check=False).stdout[-10000:])
+            for value in ("198.18.0.1", "1.1.1.4", "93.184.216.34"):
+                print(self.compose("exec", "-T", "bird", "birdc", "-v", "-r", "show", "route", "for", value, "all", check=False).stdout)
+            raise
         finally:
             for server in (udp, tcp):
                 server.shutdown()
@@ -434,6 +439,14 @@ class DockerSmokeTests(unittest.TestCase):
             lambda: status_file.exists() and self.read_json(status_file)["success"] is True,
             timeout=15,
             message="Background refresh did not finish successfully",
+        )
+        # Snapshots/status are committed before the final runtime record.
+        self.wait_until(
+            lambda: runtime_file.exists() and self.read_json(runtime_file).get("last_update_reason") == "startup"
+            and self.read_json(runtime_file).get("last_update_success") is True
+            and not self.read_json(runtime_file).get("generation_active"),
+            timeout=15,
+            message="Background refresh did not publish completed runtime state",
         )
         runtime = self.read_json(runtime_file)
         self.assertFalse(runtime.get("generation_active"))
