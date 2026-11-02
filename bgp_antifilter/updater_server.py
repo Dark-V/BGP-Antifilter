@@ -112,6 +112,10 @@ def strip_top_level_name(text):
 
 def sanitize_legacy_compose_text(text):
     stripped = strip_top_level_name(text)
+    # Portainer resolves these names into BGP_DATA_VOLUME/BGP_RUN_VOLUME in
+    # admin's environment. V1 cannot parse the nested project-name fallback,
+    # even when the outer variable is set; simplify only that unused fallback.
+    stripped = stripped.replace("${COMPOSE_PROJECT_NAME:-bgp-antifilter}", "bgp-antifilter")
     return _LEGACY_UNSUPPORTED_NETWORK_FIELDS_RE.sub("", stripped)
 
 

@@ -20,6 +20,7 @@ import dns.rdatatype
 
 from .dns_routes import domain_key
 from .live_routes import LiveRoutes
+from .state_log import StateLog
 from .dns_sync import ReplyGate, SyncOptions
 from .dns_settings import load_active_environment
 
@@ -193,7 +194,9 @@ class TCPServer(BoundedServer, socketserver.TCPServer):
 
 
 class ReadyServer(BoundedServer, HTTPServer):
-    pass
+    def __init__(self, *args):
+        self.state_log = StateLog(LOG, "DNS readiness")
+        super().__init__(*args)
 
 
 class UDPHandler(socketserver.BaseRequestHandler):
@@ -242,8 +245,9 @@ class ReadyHandler(BaseHTTPRequestHandler):
                         raise RuntimeError("DNS end-to-end probe failed")
             body = b'{"ready":true}\n'
             code = 200
+            self.server.state_log.healthy()
         except Exception as exc:
-            LOG.warning("Not ready: %s", exc)
+            self.server.state_log.failure(exc)
             body = json.dumps({"ready": False, "error": str(exc)}).encode() + b"\n"
             code = 503
         self.send_response(code)
@@ -295,6 +299,7 @@ def main():
 
 def serve(servers, manager, interval=5):
     threads = []
+    state_log = StateLog(LOG, "Route maintenance")
     try:
         for server in servers:
             thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -309,8 +314,9 @@ def serve(servers, manager, interval=5):
             threading.Event().wait(interval)
             try:
                 manager.refresh()
+                state_log.healthy()
             except Exception as exc:
-                LOG.warning("Route maintenance failed: %s", exc)
+                state_log.failure(exc)
     finally:
         for index, server in enumerate(servers):
             if index < len(threads) and threads[index].is_alive():

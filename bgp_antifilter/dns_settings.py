@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 import sys
 import urllib.request
+import urllib.error
 
 
 DNS_SETTINGS = [
@@ -67,9 +68,13 @@ def check_health():
     load_active_environment()
     if os.environ.get("DNS_PROXY_ENABLED", "0") == "0":
         return
-    with urllib.request.urlopen(health_url(os.environ), timeout=10) as reply:
-        if json.load(reply).get("ready") is not True:
-            raise RuntimeError("DNS proxy is not ready")
+    try:
+        with urllib.request.urlopen(health_url(os.environ), timeout=10) as reply:
+            if json.load(reply).get("ready") is not True:
+                raise RuntimeError("DNS proxy is not ready")
+    except urllib.error.HTTPError as exc:
+        detail = exc.read(4096).decode("utf-8", errors="replace")
+        raise RuntimeError(f"DNS readiness HTTP {exc.code}: {detail.strip()}") from exc
 
 
 if __name__ == "__main__":
