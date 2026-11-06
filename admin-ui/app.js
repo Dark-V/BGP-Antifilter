@@ -69,6 +69,7 @@ const dict = {
     domainListRawEditor: "Domain list source URLs", domainListEmpty: "No domain list sources yet",
     listHintDomainListUrls: "Add URLs of plain-text domain lists here. Domains are resolved to IPv4; wildcard and regex rules match queries seen by the DNS proxy.",
     listHintDomainRules: "One rule per line: forge.com includes the domain and all subdomains; *.forge.com includes subdomains only. Use regex:expression for regular expressions, e.g. regex:^(api|cdn)[0-9]*\\.forge\\.com$. Regex searches the lowercase ASCII/punycode name without a trailing dot; use ^ and $ for an exact match. Patterns require DNS integration. Exclusions take priority.",
+    dnsObservedRule: "IPs learned from DNS queries", dnsPatterns: "DNS patterns", invalidDomainLines: "Invalid lines",
     listHintAsns: "Add ASNs here to include all announced IPv4 prefixes of those networks.",
     listHintCountries: "Add 2-letter country codes here to load IPv4 prefixes assigned to those countries from RIPE Stat RIR data.",
     listHintGoogleRanges: "Uses Google `goog.json`, subtracts Google Cloud prefixes from `cloud.json`, and adds the remaining IPv4 prefixes. In practice this is mainly the YouTube source.",
@@ -146,6 +147,7 @@ const dict = {
     domainListRawEditor: "URL источников списков доменов", domainListEmpty: "Источников списков доменов пока нет",
     listHintDomainListUrls: "Добавляйте сюда URL текстовых списков доменов. Домены резолвятся в IPv4; wildcard и regex применяются к запросам, которые видит DNS-прокси.",
     listHintDomainRules: "Одно правило на строку: forge.com — домен со всеми поддоменами; *.forge.com — только поддомены. Для регулярных выражений: regex:выражение, например regex:^(api|cdn)[0-9]*\\.forge\\.com$. Regex ищет в имени в нижнем регистре, ASCII/punycode, без точки на конце; для точного совпадения используйте ^ и $. Шаблонам нужна DNS-интеграция. Исключения имеют приоритет.",
+    dnsObservedRule: "IP из наблюдаемых DNS-запросов", dnsPatterns: "DNS-шаблонов", invalidDomainLines: "Некорректных строк",
     listHintAsns: "Добавляйте сюда ASN, чтобы включать все анонсируемые IPv4-префиксы этих сетей.",
     listHintCountries: "Добавляйте сюда двухбуквенные коды стран, чтобы загружать IPv4-префиксы этих стран из RIR-данных через RIPE Stat.",
     listHintGoogleRanges: "Берутся Google `goog.json`, из них вычитаются Google Cloud префиксы из `cloud.json`, а оставшиеся IPv4-префиксы добавляются в маршруты. На практике это в основном источник для YouTube.",
@@ -2650,7 +2652,9 @@ function renderListSourceStats(record) {
     record.domains != null ? `${t("domains")}: ${record.domains}` : "",
     record.resolved_domains != null ? `${t("resolvedDomains")}: ${record.resolved_domains}` : "",
     record.skipped_domains ? `${t("skippedDomains")}: ${record.skipped_domains}` : "",
-    record.routes != null ? `${t("resolvedRoutes")}: ${record.routes}` : "",
+    record.dns_patterns ? `${t("dnsPatterns")}: ${record.dns_patterns}` : "",
+    record.invalid_lines ? `${t("invalidDomainLines")}: ${record.invalid_lines}` : "",
+    record.dns_only ? t("dnsObservedRule") : record.routes != null ? `${t("resolvedRoutes")}: ${record.routes}` : "",
     sourceCacheFact(record),
   ].filter(Boolean);
   return `
