@@ -493,6 +493,8 @@ class DockerSmokeTests(unittest.TestCase):
                 result.answer.append(dns.rrset.from_text(query.question[0].name, 60, "IN", "CNAME", "edge.other.test."))
             elif query.question[0].name.to_text() == "direct.example.test.":
                 result.answer.append(dns.rrset.from_text(query.question[0].name, 1, "IN", "A", "93.184.216.34"))
+            elif query.question[0].name.to_text() == "cdn.wild.example.test.":
+                result.answer.append(dns.rrset.from_text(query.question[0].name, 60, "IN", "A", "1.0.0.2"))
             else:
                 result.answer.append(dns.rrset.from_text(query.question[0].name, 60, "IN", "A", answer_address[0]))
             return result
@@ -513,11 +515,9 @@ class DockerSmokeTests(unittest.TestCase):
             with socket.socket() as reservation:
                 reservation.bind(("127.0.0.1", 0))
                 self.bgp_feed_port = reservation.getsockname()[1]
-            (self.config_dir / "include-domains.txt").write_text("example.test\n", encoding="utf-8")
-            (self.config_dir / "exclude-domains.txt").write_text("direct.example.test\n", encoding="utf-8")
-            cache = self.generated_dir / "cache"
-            cache.mkdir(exist_ok=True)
-            update_routes.cache_path(cache, "exclude-domain", "direct.example.test").write_text("93.184.216.254/32\n", encoding="utf-8")
+            (self.config_dir / "include-domains.txt").write_text(
+                r"regex:^(cdn|alias)\.example\.test$" + "\n*.wild.example.test\n", encoding="utf-8")
+            (self.config_dir / "exclude-domains.txt").write_text(r"regex:^direct\.example\.test$" + "\n", encoding="utf-8")
             self.compose_file.write_text(self.compose_yaml(), encoding="utf-8")
             self.compose("up", "-d", "--build", "bird", "dns-proxy")
             ready_url = f"http://127.0.0.1:{self.dns_health_port}/ready"
@@ -554,6 +554,9 @@ class DockerSmokeTests(unittest.TestCase):
             reply = dns.query.tcp(query, "127.0.0.1", port=self.dns_port, timeout=5)
             self.assertEqual(reply.answer[0][0].address, "1.1.1.2")
             self.wait_until(lambda: route_present("1.1.1.2"), 5, "Second IP was not advertised")
+            wildcard_query = dns.message.make_query("cdn.wild.example.test", "A")
+            dns.query.udp(wildcard_query, "127.0.0.1", port=self.dns_port, timeout=5)
+            self.wait_until(lambda: route_present("1.0.0.2"), 5, "Wildcard query did not produce a BGP route")
             self.assertNotIn("1.1.1.2/32", (self.generated_dir / "routes.conf").read_text(), "DNS rewrote the full route snapshot")
             excluded = dns.message.make_query("direct.example.test", "A")
             dns.query.udp(excluded, "127.0.0.1", port=self.dns_port, timeout=5)

@@ -24,6 +24,7 @@ from urllib.parse import parse_qs, urlparse
 from . import __version__
 from . import dns_resolver
 from . import dns_settings
+from .domain_rules import validate_rule_list
 from .runtime_paths import GENERATED_PATH_SPECS, LIST_FILE_SPECS, env_path, env_paths
 from . import updater_server
 
@@ -1417,6 +1418,13 @@ class AdminHandler(BaseHTTPRequestHandler):
         if "\x00" in content:
             self.send_json({"error": "content contains NUL byte"}, HTTPStatus.BAD_REQUEST)
             return
+
+        if name in ("include-domains", "exclude-domains"):
+            try:
+                validate_rule_list(content)
+            except ValueError as exc:
+                self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+                return
 
         backup = backup_file(list_path)
         if content and not content.endswith("\n"):

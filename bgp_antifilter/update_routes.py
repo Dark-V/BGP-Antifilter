@@ -15,6 +15,7 @@ from urllib.parse import urljoin, urlsplit
 
 from . import dns_resolver
 from . import generate_routes
+from .domain_rules import is_pattern, normalize_domain_name, normalize_rule
 from .logging import progress
 from .runtime_paths import GENERATED_PATH_SPECS, LIST_FILE_SPECS, env_path, env_paths
 
@@ -23,7 +24,6 @@ DEFAULT_CACHE_MAX_AGE = 7 * 24 * 60 * 60
 DEFAULT_MIN_PREFIX_LENGTH = 8
 DEFAULT_DNS_HTTP_REDIRECTS = 5
 COUNTRY_CODE_RE = re.compile(r"^[A-Z]{2}$")
-DOMAIN_LABEL_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$")
 DELEGATED_REGISTRIES = ("afrinic", "apnic", "arin", "lacnic", "ripencc")
 DELEGATED_STATS_BASE_URL = "https://ftp.apnic.net/pub/stats"
 PROGRESS_STEPS = {
@@ -158,24 +158,6 @@ def parse_named_url_list(path):
     return result
 
 
-def normalize_domain_name(value):
-    domain = str(value or "").strip().rstrip(".").lower()
-    if not domain or any(char.isspace() for char in domain):
-        return None
-    if "://" in domain or "/" in domain or ":" in domain or domain.startswith("."):
-        return None
-    try:
-        domain = domain.encode("idna").decode("ascii")
-    except UnicodeError:
-        return None
-    if len(domain) > 253:
-        return None
-    labels = domain.split(".")
-    if any(not DOMAIN_LABEL_RE.fullmatch(label) for label in labels):
-        return None
-    return domain
-
-
 def parse_domain_list(text):
     domains = []
     seen = set()
@@ -184,8 +166,9 @@ def parse_domain_list(text):
         line = raw_line.strip()
         if not line or line.startswith("#"):
             continue
-        domain = normalize_domain_name(line)
-        if domain is None:
+        try:
+            domain = normalize_rule(line)
+        except ValueError:
             invalid += 1
             continue
         if domain in seen:
@@ -729,11 +712,36 @@ def collect_sources(cache_dir, cache_max_age, include_google, dns_policy=None):
     domain_list_sources = parse_named_url_list(list_files["domain-list-urls"])
     asn_sources = read_list(list_files["asns"])
     country_sources = read_list(list_files["countries"])
-    exclude_domains = read_list(list_files["exclude-domains"])
-    include_domains = read_list(list_files["include-domains"])
-    if dns_policy is not None:
-        dns_policy["include_domains"] = [name for value in include_domains if (name := normalize_domain_name(value))]
-        dns_policy["exclude_domains"] = [name for value in exclude_domains if (name := normalize_domain_name(value))]
+
+    def prepare_domains(name):
+        nonlocal source_failed
+        literals, rules = [], []
+        for value in read_list(list_files[name + "-domains"]):
+            try:
+                rule = normalize_rule(value)
+            except ValueError as exc:
+                record = {"kind": name + "-domain", "name": value, "status": "failed", "error": str(exc)}
+                sources.append(record)
+                errors.append(record)
+                source_failed = True
+                continue
+            rules.append(rule)
+            if is_pattern(rule):
+                record = {"kind": name + "-domain", "name": value, "status": "fresh",
+                          "dns_only": True, "routes": 0}
+                if dns_policy is None:
+                    record.update(status="failed", error="Domain patterns require DNS_PROXY_ENABLED=1")
+                    errors.append(record)
+                    source_failed = True
+                sources.append(record)
+            else:
+                literals.append(rule)
+        if dns_policy is not None:
+            dns_policy[name + "_domains"] = rules
+        return literals
+
+    exclude_domains = prepare_domains("exclude")
+    include_domains = prepare_domains("include")
     total_items = (
         len(url_sources)
         + len(domain_list_sources)
@@ -873,6 +881,7 @@ def collect_sources(cache_dir, cache_max_age, include_google, dns_policy=None):
         record["skipped_domains"] = 0
         record["invalid_lines"] = 0
         record["routes"] = 0
+        record["dns_patterns"] = 0
 
         if ok:
             domains, invalid_lines = parse_domain_list(text)
@@ -884,6 +893,13 @@ def collect_sources(cache_dir, cache_max_age, include_google, dns_policy=None):
             skipped_domains = []
 
             for domain_index, domain in enumerate(domains, 1):
+                if is_pattern(domain):
+                    record["dns_patterns"] += 1
+                    if dns_policy is None:
+                        ok = False
+                        source_failed = True
+                        record.update(status="failed", error="Domain patterns require DNS_PROXY_ENABLED=1")
+                    continue
                 domain_text, _domain_record, domain_ok = resolve_domain(
                     "domain-list-domain",
                     domain,
