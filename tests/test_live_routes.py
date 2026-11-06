@@ -158,6 +158,83 @@ class LiveWorkerTests(unittest.TestCase):
         self.assertEqual(self.publisher.changes, [({"1.1.1.1/32"}, set())])
         self.assertEqual((self.root / "routes.conf").stat().st_mtime_ns, stamp)
 
+    def test_regex_and_wildcard_queries_publish_deltas_and_exclusions_win(self):
+        candidate = policy(2)
+        candidate["include_domains"] = ["*.forge.com", r"regex:^api[0-9]+\.other\.test$"]
+        candidate["exclude_domains"] = [r"regex:^direct\."]
+        self.install(candidate)
+        stamp = (self.root / "routes.conf").stat().st_mtime_ns
+        proxy = dns_proxy.Proxy(self.worker, "127.0.0.1")
+
+        def answer(query, tcp=False):
+            reply = dns.message.make_response(query)
+            reply.answer = [dns.rrset.from_text(query.question[0].name, 60, "IN", "A", "1.1.1.1")]
+            return reply
+
+        proxy.exchange = answer
+        with mock.patch.object(self.worker.index.cover, "routes", side_effect=AssertionError("full scan")):
+            wire = proxy.handle(dns.message.make_query("a.forge.com", "A").to_wire(), "127.0.0.1")
+            self.assertEqual(dns.message.from_wire(wire).answer[0][0].address, "1.1.1.1")
+            self.worker.flush()
+            self.assertTrue(self.advertised("1.1.1.1"))
+            self.worker.observe("api12.other.test", [("1.0.0.1", 60)])
+            self.worker.observe("forge.com", [("8.8.8.8", 60)])
+            self.worker.observe("unrelated.test", [("8.8.4.4", 60)])
+            self.worker.observe("direct.forge.com", [("1.1.1.1", 60)])
+            self.worker.flush()
+        self.assertTrue(self.advertised("1.0.0.1"))
+        self.assertFalse(self.advertised("1.1.1.1"))
+        self.assertFalse(self.advertised("8.8.8.8"))
+        self.assertFalse(self.advertised("8.8.4.4"))
+        self.assertEqual((self.root / "routes.conf").stat().st_mtime_ns, stamp)
+
+    def test_regex_policy_reload_reclassifies_saved_addresses(self):
+        candidate = policy(2)
+        candidate["include_domains"] = [r"regex:^cdn[0-9]+\.forge\.com$"]
+        self.install(candidate)
+        self.worker.observe("cdn12.forge.com", [("1.1.1.1", 60)])
+        self.worker.flush()
+        candidate["generation"] = 3
+        candidate["routes"] = ["8.8.0.0/16"]
+        self.install(candidate)
+        self.assertIn("1.1.1.1/32", (self.root / "routes.conf").read_text())
+        candidate["generation"] = 4
+        candidate["include_domains"] = [r"regex:^api[0-9]+\.forge\.com$"]
+        self.install(candidate)
+        self.assertFalse(self.advertised("1.1.1.1"))
+        candidate["generation"] = 5
+        candidate["include_domains"] = [r"regex:^cdn[0-9]+\.forge\.com$"]
+        self.install(candidate)
+        self.assertTrue(self.advertised("1.1.1.1"))
+
+    def test_regex_restart_restores_policy_addresses_and_cname_scope(self):
+        candidate = policy(2)
+        candidate["include_domains"] = [r"regex:^cdn[0-9]+\.forge\.com$"]
+        self.install(candidate)
+        self.worker.observe("cdn12.forge.com", [("1.1.1.1", 60)], targets=[("edge.other.test", 60)])
+        self.worker.flush()
+        self.worker.close()
+        publisher = Publisher()
+        restarted = live_routes.LiveRoutes(self.root, publisher=publisher, batch_seconds=0.005)
+        self.addCleanup(restarted.close)
+        restarted.flush()
+        restarted.observe("edge.other.test", [("1.0.0.1", 60)])
+        restarted.flush()
+        self.assertIn("1.1.1.1/32", publisher.routes)
+        self.assertIn("1.0.0.1/32", publisher.routes)
+
+    def test_invalid_regex_policy_keeps_the_committed_policy_and_routes(self):
+        before = set(self.publisher.routes)
+        candidate = policy(2)
+        candidate["exclude_domains"] = ["regex:("]
+        with self.assertRaisesRegex(RuntimeError, "invalid regex"):
+            self.install(candidate)
+        self.assertEqual(self.worker.policy["generation"], 1)
+        self.assertEqual(self.publisher.routes, before)
+        with closing(sqlite3.connect(self.root / "dns-cache.sqlite3")) as db:
+            stored = json.loads(db.execute("SELECT value FROM metadata WHERE key='policy'").fetchone()[0])
+        self.assertEqual(stored["generation"], 1)
+
     def test_dns_reply_is_available_while_route_publication_is_blocked(self):
         self.publisher.block = True
         try:

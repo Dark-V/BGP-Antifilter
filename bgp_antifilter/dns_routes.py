@@ -12,6 +12,9 @@ from pathlib import Path
 import subprocess
 import time
 
+from .domain_rules import DomainRules, domain_key, match_domain
+
+
 def atomic_write(path, text):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -24,19 +27,10 @@ def write_json(path, value):
     atomic_write(path, json.dumps(value, sort_keys=True) + "\n")
 
 
-def domain_key(value):
-    return str(value).rstrip(".").encode("idna").decode("ascii").lower()
-
-
-def match_domain(domain, roots):
-    labels = domain_key(domain).split(".")
-    return any(".".join(labels[index:]) in roots for index in range(len(labels)))
-
-
 def lease_sets(policy, leases, now):
     includes, excludes = set(), set()
-    include_roots = set(policy["include_domains"])
-    exclude_roots = set(policy["exclude_domains"])
+    include_roots = DomainRules(policy["include_domains"])
+    exclude_roots = DomainRules(policy["exclude_domains"])
     for domain, addresses in leases.items():
         target = excludes if match_domain(domain, exclude_roots) else includes
         if target is includes and not match_domain(domain, include_roots):
@@ -156,7 +150,7 @@ class RouteManager:
         stamp = (stat.st_mtime_ns, stat.st_size)
         if self._policy_stamp != stamp:
             self._policy = json.loads(self.policy_file.read_text(encoding="utf-8"))
-            self._selected_roots = set(self._policy["include_domains"]) | set(self._policy["exclude_domains"])
+            self._selected_roots = DomainRules(self._policy["include_domains"] + self._policy["exclude_domains"])
             self._policy_stamp = stamp
         return self._policy
 

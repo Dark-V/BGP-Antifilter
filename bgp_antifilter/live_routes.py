@@ -14,6 +14,7 @@ import time
 
 from .bgp_feed import BGPFeed, SYNC_PREFIX
 from .dns_routes import RouteManager, atomic_write, domain_key, match_domain, write_json
+from .domain_rules import DomainRules
 
 
 LOG = logging.getLogger("dns-routes")
@@ -135,7 +136,7 @@ class LiveRoutes:
         self.included, self.excluded = Counter(), Counter()
         self.lease_dirty, self.alias_dirty = {}, {}
         self.lease_count = self.alias_count = 0
-        self.include_roots, self.exclude_roots = set(), set()
+        self.include_roots, self.exclude_roots = DomainRules(), DomainRules()
         self._pending_stamp = None
         self.db = None
         self.thread = threading.Thread(target=self._run, name="dns-route-worker", daemon=True)
@@ -306,7 +307,7 @@ class LiveRoutes:
         index = IncrementalRoutes(policy)
         if getattr(self.publisher, "sync_marker", False) and index.baseline.contains(ipaddress.IPv4Network(SYNC_PREFIX)):
             raise ValueError(f"{SYNC_PREFIX} is reserved for DNS/BIRD synchronization")
-        includes, excludes = set(policy["include_domains"]), set(policy["exclude_domains"])
+        includes, excludes = DomainRules(policy["include_domains"]), DomainRules(policy["exclude_domains"])
         included, excluded = Counter(), Counter()
         now = time.time()
         # Remove expired owners using the old policy's counters before
