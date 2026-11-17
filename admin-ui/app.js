@@ -1,5 +1,8 @@
 const dict = {
   en: {
+    clearUpdateLock: "Remove stale update.lock",
+    updateLockRemoved: "Removed update.lock. You can now reload routes.",
+    updateLockAbsent: "The stale update.lock is already gone.",
     dashboard: "Dashboard", lists: "Lists", tools: "Tools", settings: "Settings", loginTitle: "Sign in",
     login: "Login", logout: "Logout", refresh: "Refresh", routes: "Active routes", lastResult: "Generation status",
     nextUpdate: "Until auto refresh", duration: "Generation time", actions: "Actions",
@@ -77,6 +80,9 @@ const dict = {
     googleRangesSourceTitle: "Google service ranges source"
   },
   ru: {
+    clearUpdateLock: "Удалить зависший update.lock",
+    updateLockRemoved: "update.lock удалён. Можно обновить маршруты.",
+    updateLockAbsent: "Зависший update.lock уже удалён.",
     dashboard: "Панель", lists: "Списки", tools: "Инструменты", settings: "Настройки", loginTitle: "Вход",
     login: "Войти", logout: "Выйти", refresh: "Обновить", routes: "Активные маршруты", lastResult: "Статус генерации",
     nextUpdate: "До автообновления", duration: "Время генерации", actions: "Действия",
@@ -1801,6 +1807,7 @@ function renderStageDetails(stage) {
 async function loadStatus() {
   const data = await api("/api/status");
   lastStatusPayload = data;
+  $("clear-update-lock-btn").classList.toggle("hidden", !data.can_clear_update_lock);
   setVersion(data.version);
   const status = data.status || {};
   const runtime = data.runtime || {};
@@ -1899,6 +1906,12 @@ async function runAction(action) {
   try {
     const result = await api(`/api/actions/${action}`, {method: "POST", body: "{}"});
     $("operation-log-details").open = true;
+    if (action === "clear-update-lock") {
+      $("clear-update-lock-btn").classList.add("hidden");
+      $("operation-log").textContent = t(result.removed ? "updateLockRemoved" : "updateLockAbsent");
+      await loadStatus();
+      return;
+    }
     if (action === "reload" && result.accepted) {
       pendingReloadOperation = true;
       pendingReloadStartedAtUnix = Math.floor(Date.now() / 1000);

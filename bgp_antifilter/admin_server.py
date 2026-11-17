@@ -12,6 +12,7 @@ import secrets
 import shlex
 import shutil
 import socket
+import stat
 import subprocess
 import threading
 import time
@@ -26,6 +27,7 @@ from . import dns_resolver
 from . import dns_settings
 from .domain_rules import validate_rule_list
 from .runtime_paths import GENERATED_PATH_SPECS, LIST_FILE_SPECS, env_path, env_paths
+from . import update_lock
 from . import updater_server
 
 
@@ -620,7 +622,38 @@ def reload_thread_active():
 
 
 def reload_lock_active():
-    return UPDATE_LOCK_DIR.exists()
+    try:
+        return update_lock.active(UPDATE_LOCK_DIR)
+    except OSError:
+        # Keep updates blocked if we cannot determine who owns the lock.
+        return True
+
+
+def can_clear_legacy_update_lock():
+    try:
+        return (UPDATE_LOCK_DIR.is_dir() and not UPDATE_LOCK_DIR.is_symlink()
+                and not any(UPDATE_LOCK_DIR.iterdir())
+                and not settings_apply_active() and not reload_thread_active() and not reload_lock_active())
+    except OSError:
+        return False
+
+
+def clear_legacy_update_lock():
+    with RELOAD_LOCK:
+        if settings_apply_active() or reload_thread_active():
+            raise update_lock.UpdateLockBusy("A route update or settings application is running")
+        with update_lock.acquire(UPDATE_LOCK_DIR):
+            try:
+                if not stat.S_ISDIR(UPDATE_LOCK_DIR.lstat().st_mode):
+                    raise RuntimeError("update.lock is not an empty directory")
+                UPDATE_LOCK_DIR.rmdir()
+            except FileNotFoundError:
+                return False
+            except OSError as exc:
+                if exc.errno in (errno.ENOTDIR, errno.ENOTEMPTY, errno.EEXIST):
+                    raise RuntimeError("update.lock is not an empty directory") from exc
+                raise
+    return True
 
 
 def reconcile_runtime_state(runtime):
@@ -685,8 +718,10 @@ def apply_reload():
 def start_reload():
     global RELOAD_THREAD
     with RELOAD_LOCK:
-        if settings_apply_active() or reload_runtime_active() or (RELOAD_THREAD is not None and RELOAD_THREAD.is_alive()):
+        if settings_apply_active() or reload_thread_active() or reload_lock_active() or reload_runtime_active():
             raise RuntimeError("reload already running")
+        if UPDATE_LOCK_DIR.exists() or UPDATE_LOCK_DIR.is_symlink():
+            raise RuntimeError("Legacy update.lock remains: remove it from the panel before reloading routes")
         try:
             write_reload_result({
                 "active": True,
@@ -1200,6 +1235,7 @@ class AdminHandler(BaseHTTPRequestHandler):
                 "bird": bird,
                 "bgp": bgp,
                 "reload_result": reload_result,
+                "can_clear_update_lock": can_clear_legacy_update_lock(),
             })
             return
 
@@ -1308,6 +1344,16 @@ class AdminHandler(BaseHTTPRequestHandler):
                 self.send_json({"error": str(exc)}, HTTPStatus.CONFLICT)
                 return
             self.send_json(payload, HTTPStatus.ACCEPTED)
+            return
+        if path == "/api/actions/clear-update-lock":
+            try:
+                removed = clear_legacy_update_lock()
+            except RuntimeError as exc:
+                self.send_json({"error": str(exc)}, HTTPStatus.CONFLICT)
+            except OSError as exc:
+                self.send_json({"error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
+            else:
+                self.send_json({"ok": True, "removed": removed})
             return
         if path == "/api/actions/apply-settings":
             try:

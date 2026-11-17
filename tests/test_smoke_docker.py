@@ -333,6 +333,36 @@ class DockerSmokeTests(unittest.TestCase):
             self.wait_until(lambda: "up and running" in self.compose("exec", "-T", "bird", "birdc", "show", "status", check=False).stdout,
                             30, "Packaged BIRD did not start")
             self.assertIn("starting update", self.compose("logs", "bird").stdout)
+            if existing_volume:
+                unlock = "/api/actions/clear-update-lock"
+                lock = "/etc/bird/generated/update.lock"
+                self.compose("exec", "-T", "bird", "mkdir", lock)
+                blocked = self.compose("exec", "-T", "bird", "/reload-routes.sh", check=False)
+                self.assertIn("Legacy update.lock remains", blocked.stderr)
+                with self.assertRaises(urllib.error.HTTPError) as denied:
+                    urllib.request.urlopen(f"http://127.0.0.1:{admin_port}{unlock}", data=b"{}", timeout=5)
+                self.assertEqual(denied.exception.code, 401)
+                denied.exception.close()
+
+                # A different container holds the same flock as the reload script.
+                self.compose("exec", "-d", "bird", "sh", "-ec",
+                             f"exec 9>>{lock}.flock; flock -n 9; echo $$ >/tmp/smoke-updater.pid; exec sleep 60")
+                self.wait_until(lambda: self.compose("exec", "-T", "bird", "test", "-s", "/tmp/smoke-updater.pid",
+                                                     check=False).returncode == 0, 10, "Test updater did not acquire its lock")
+                self.assertFalse(api("/api/status")["can_clear_update_lock"])
+                with self.assertRaises(urllib.error.HTTPError) as busy:
+                    api(unlock, "POST", {})
+                self.assertEqual(busy.exception.code, 409)
+                busy.exception.close()
+                overlapping = self.compose("exec", "-T", "bird", "/reload-routes.sh", check=False)
+                self.assertIn("Another route update is already running", overlapping.stderr)
+
+                self.compose("exec", "-T", "bird", "sh", "-ec", 'kill -KILL "$(cat /tmp/smoke-updater.pid)"')
+                self.wait_until(lambda: api("/api/status")["can_clear_update_lock"], 10,
+                                "Kernel lock survived the end of the test updater")
+                self.assertTrue(api(unlock, "POST", {})["removed"])
+                self.assertFalse(api("/api/status")["can_clear_update_lock"])
+                self.compose("exec", "-T", "bird", "/reload-routes.sh")
             # No repository/host-directory mount is available in this stack.
             for service in ("bird", "dns-proxy", "admin"):
                 cid = self.compose("ps", "-q", service).stdout.strip()
