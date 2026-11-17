@@ -1,8 +1,10 @@
 import argparse
+from contextlib import closing
 import ipaddress
 import json
 import re
 from pathlib import Path
+import sqlite3
 import subprocess
 import sys
 
@@ -110,6 +112,23 @@ def find_sources(address, status):
     return result
 
 
+def find_dns_origin(address, database):
+    if not database.is_file():
+        return None
+    try:
+        with closing(sqlite3.connect(database.resolve().as_uri() + "?mode=ro", uri=True, timeout=0.5)) as db:
+            row = db.execute("SELECT domain, rule, added_at FROM dns_route_origins WHERE address=?",
+                             (str(address),)).fetchone()
+    except sqlite3.Error as exc:
+        if str(exc) != "no such table: dns_route_origins":
+            print(f"DNS route origin lookup failed: {exc}", file=sys.stderr)
+        return None
+    if row is not None:
+        domain, rule, added_at = row
+        return {"domain": domain, "rule": rule, "added_at": added_at}
+    return None
+
+
 def load_status(path):
     if not path.exists():
         return {"sources": []}
@@ -176,6 +195,7 @@ def main(argv=None):
         print("Only IPv4 addresses are supported by this project", file=sys.stderr)
         return 2
 
+    dns_origin = None
     if args.live:
         try:
             output = bird_cli.query(3, "show", "route", "for", str(address), "primary")
@@ -184,8 +204,11 @@ def main(argv=None):
             print(f"BIRD route lookup failed: {detail.strip()}", file=sys.stderr)
             return 2
         # The DNS synchronization marker is internal to BIRD.
-        routes = [ipaddress.IPv4Network(prefix) for prefix, row in bird_cli.IPV4_ROUTE_ROW.findall(output)
-                  if prefix != SYNC_PREFIX or "[dns_live " not in row]
+        rows = bird_cli.IPV4_ROUTE_ROW.findall(output)
+        rows = [(prefix, row) for prefix, row in rows if prefix != SYNC_PREFIX or "[dns_live " not in row]
+        routes = [ipaddress.IPv4Network(prefix) for prefix, _ in rows]
+        if any(prefix == f"{address}/32" and "[dns_live " in row for prefix, row in rows):
+            dns_origin = find_dns_origin(address, Path(args.routes).with_name("dns-cache.sqlite3"))
     else:
         routes = read_networks(Path(args.routes), extract=True)
     route_matches = matching_networks(address, routes)
@@ -193,7 +216,10 @@ def main(argv=None):
     source_results = find_sources(address, status)
 
     if args.json:
-        print(json.dumps(build_result(address, route_matches, source_results), indent=2, ensure_ascii=False))
+        result = build_result(address, route_matches, source_results)
+        if dns_origin is not None:
+            result["dns_origin"] = dns_origin
+        print(json.dumps(result, indent=2, ensure_ascii=False))
     else:
         print(render_result(address, route_matches, source_results, live=args.live))
 

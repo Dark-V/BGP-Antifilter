@@ -16,7 +16,7 @@ from unittest import mock
 import dns.message
 import dns.rrset
 
-from bgp_antifilter import bgp_feed, dns_proxy, dns_routes, live_routes
+from bgp_antifilter import bgp_feed, check_ip, dns_proxy, dns_routes, live_routes
 
 
 def policy(generation=1):
@@ -147,6 +147,9 @@ class LiveWorkerTests(unittest.TestCase):
     def advertised(self, value):
         return any(ipaddress.IPv4Address(value) in ipaddress.IPv4Network(route) for route in self.publisher.routes)
 
+    def origin(self, address):
+        return check_ip.find_dns_origin(address, self.root / "dns-cache.sqlite3")
+
     def test_new_ip_uses_delta_without_rewriting_route_file_or_scanning_rib(self):
         stamp = (self.root / "routes.conf").stat().st_mtime_ns
         self.publisher.changes.clear()
@@ -213,6 +216,9 @@ class LiveWorkerTests(unittest.TestCase):
         self.install(candidate)
         self.worker.observe("cdn12.forge.com", [("1.1.1.1", 60)], targets=[("edge.other.test", 60)])
         self.worker.flush()
+        original = self.origin("1.1.1.1")
+        self.assertEqual(original["domain"], "cdn12.forge.com")
+        self.assertEqual(original["rule"], candidate["include_domains"][0])
         self.worker.close()
         publisher = Publisher()
         restarted = live_routes.LiveRoutes(self.root, publisher=publisher, batch_seconds=0.005)
@@ -222,6 +228,44 @@ class LiveWorkerTests(unittest.TestCase):
         restarted.flush()
         self.assertIn("1.1.1.1/32", publisher.routes)
         self.assertIn("1.0.0.1/32", publisher.routes)
+        self.assertEqual(self.origin("1.1.1.1"), original)
+        self.assertEqual(self.origin("1.0.0.1")["domain"], original["domain"])
+
+    def test_origin_survives_renewal_and_resets_after_withdrawal(self):
+        candidate = policy(2)
+        candidate["include_domains"] = ["*.example.test"]
+        self.install(candidate)
+        now = time.time()
+        self.worker.observe("cdn.example.test", [("1.1.1.1", 60), ("93.184.216.34", 60)])
+        self.worker.flush()
+        original = self.origin("1.1.1.1")
+        self.assertGreaterEqual(original["added_at"], now)
+        self.assertEqual(original["rule"], "*.example.test")
+        self.assertIsNone(self.origin("93.184.216.34"), "The static prefix already covers the address")
+
+        self.worker.observe("cdn.example.test", [("1.1.1.1", 120)])
+        self.worker.flush()
+        self.assertEqual(self.origin("1.1.1.1"), original)
+
+        self.worker.observe("direct.example.test", [("1.1.1.1", 1)])
+        self.worker.flush()
+        self.assertIsNone(self.origin("1.1.1.1"))
+        wait_for(lambda: self.advertised("1.1.1.1"), timeout=3)
+        self.assertGreater(self.origin("1.1.1.1")["added_at"], original["added_at"])
+
+    def test_legacy_sqlite_leases_recover_rule_with_unknown_date(self):
+        self.worker.observe("cdn.example.test", [("1.1.1.1", 60)])
+        self.worker.flush()
+        self.worker.close()
+        with closing(sqlite3.connect(self.root / "dns-cache.sqlite3")) as db, db:
+            db.execute("DROP TABLE dns_route_origins")
+        self.assertIsNone(self.origin("1.1.1.1"))
+
+        restarted = live_routes.LiveRoutes(self.root, publisher=Publisher(), batch_seconds=0.005)
+        self.addCleanup(restarted.close)
+        restarted.flush()
+        self.assertEqual(self.origin("1.1.1.1"),
+                         {"domain": "cdn.example.test", "rule": "example.test", "added_at": None})
 
     def test_invalid_regex_policy_keeps_the_committed_policy_and_routes(self):
         before = set(self.publisher.routes)
@@ -259,6 +303,7 @@ class LiveWorkerTests(unittest.TestCase):
     def test_full_update_merges_observed_ips_into_snapshot_and_bgp(self):
         self.worker.observe("cdn.example.test", [("1.1.1.1", 60)])
         self.worker.flush()
+        original = self.origin("1.1.1.1")
         candidate = policy(2)
         candidate["routes"] = ["198.51.100.0/24"]
         self.install(candidate)
@@ -266,6 +311,7 @@ class LiveWorkerTests(unittest.TestCase):
         self.assertNotIn("93.184.216.0/24", self.publisher.routes)
         self.assertIn("1.1.1.1/32", (self.root / "routes.conf").read_text())
         self.assertEqual((self.root / "routes.conf").read_bytes(), (self.root / "routes.last-good.conf").read_bytes())
+        self.assertEqual(self.origin("1.1.1.1"), original)
 
     def test_restart_restores_sqlite_ips_and_separate_alias_scope(self):
         self.worker.observe("cdn.example.test", [("1.1.1.1", 60)], targets=[("edge.other.test", 60)])
@@ -301,7 +347,7 @@ class LiveWorkerTests(unittest.TestCase):
                     return db.execute("SELECT count(*) FROM leases WHERE name='old.example.test'").fetchone()[0] == 0
 
             wait_for(expired_row_removed)
-            self.assertEqual(self.worker.included["1.1.1.1"], 1)
+            self.assertEqual(len(self.worker.included["1.1.1.1"]), 1)
             self.assertIn("1.1.1.1/32", self.publisher.routes)
 
     def test_rejected_full_policy_keeps_committed_state(self):

@@ -72,7 +72,7 @@ class DomainRules:
         roots, wildcards, patterns = set(), set(), []
         for entry in dict.fromkeys(normalize_rule(value) for value in entries):
             if entry.startswith("regex:"):
-                patterns.append(compile_regex(entry[6:]))
+                patterns.append((entry, compile_regex(entry[6:])))
             elif entry.startswith("*."):
                 wildcards.add(entry[2:])
             else:
@@ -80,24 +80,29 @@ class DomainRules:
         self.roots, self.wildcards = roots, wildcards
         self.patterns = tuple(patterns)
         # Each policy owns its cache; a replacement cannot reuse old matches.
-        self.matches = lru_cache(maxsize=4096)(self._matches)
+        self.matching_rule = lru_cache(maxsize=4096)(self._matching_rule)
 
-    def _matches(self, domain):
+    def matches(self, domain):
+        return self.matching_rule(domain) is not None
+
+    def _matching_rule(self, domain):
         domain = domain_key(domain)
         labels = domain.split(".")
         for index in range(len(labels)):
             suffix = ".".join(labels[index:])
-            if suffix in self.roots or (index > 0 and suffix in self.wildcards):
-                return True
+            if suffix in self.roots:
+                return suffix
+            if index > 0 and suffix in self.wildcards:
+                return f"*.{suffix}"
         deadline = time.monotonic() + REGEX_MATCH_TIMEOUT
-        for pattern in self.patterns:
+        for rule, pattern in self.patterns:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise TimeoutError("Domain regex matching exceeded 5 ms")
             # Do not treat a timed-out exclusion as a negative match.
             if pattern.search(domain, timeout=remaining):
-                return True
-        return False
+                return rule
+        return None
 
 
 def match_domain(domain, rules):

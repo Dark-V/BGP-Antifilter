@@ -9,6 +9,7 @@ const dict = {
     commandOk: "Command completed", commandFailed: "Command failed", returnCode: "Return code",
     stdout: "Output", stderr: "Errors", matched: "Matched", notMatched: "Not matched",
     birdRoutes: "Routes in BIRD", routeCheckFailed: "Route check unavailable", sources: "Sources", rawDetails: "Details",
+    dynamicDnsRoute: "Dynamic DNS route", dnsRouteRule: "Rule", dnsRouteAdded: "Added to DNS routes",
     cache: "Cache", generator: "Generator", bird: "BIRD", mikrotik: "MikroTik",
     statusOk: "OK", statusWarn: "Warning", statusFail: "Failed", lastGeneration: "Last generation", birdUptime: "BIRD uptime",
     cacheHits: "Used from cache", cachedCount: "From cache", freshDownloads: "Fresh downloads", skippedSources: "Skipped sources", cacheTtl: "Cache TTL",
@@ -86,6 +87,7 @@ const dict = {
     commandOk: "Команда выполнена", commandFailed: "Команда завершилась с ошибкой", returnCode: "Код возврата",
     stdout: "Вывод", stderr: "Ошибки", matched: "Найден", notMatched: "Не найден",
     birdRoutes: "Маршруты в BIRD", routeCheckFailed: "Не удалось проверить маршруты", sources: "Источники", rawDetails: "Детали",
+    dynamicDnsRoute: "Динамический DNS-маршрут", dnsRouteRule: "Правило", dnsRouteAdded: "Добавлен в DNS-маршруты",
     cache: "Кеш", generator: "Генератор", bird: "BIRD", mikrotik: "MikroTik",
     statusOk: "OK", statusWarn: "Внимание", statusFail: "Ошибка", lastGeneration: "Последняя генерация", birdUptime: "Аптайм BIRD",
     cacheHits: "Использовано из кеша", cachedCount: "Из кеша", freshDownloads: "Свежие загрузки", skippedSources: "Пропущено источников", cacheTtl: "Время жизни кеша",
@@ -1377,6 +1379,15 @@ function renderCheckIpResult(result, address) {
   const status = result.matched ? t("matched") : t("notMatched");
   const okClass = result.matched ? "ok" : "fail";
   const routes = (result.routes || []).map(route => `<span class="route-pill">${escapeHtml(route)}</span>`).join("");
+  const origin = result.dns_origin;
+  const dynamicSource = origin ? `
+    <div class="kv">
+      <span>${t("dynamicDnsRoute")}</span>
+      <strong>${escapeHtml(origin.domain)}</strong>
+      <span class="dns-route-rule">${t("dnsRouteRule")}: <code>${escapeHtml(origin.rule)}</code></span>
+      <span>${t("dnsRouteAdded")}: ${escapeHtml(origin.added_at == null ? t("unknownTime") : formatDateTime(origin.added_at * 1000))}</span>
+    </div>
+  ` : "";
   const sources = (result.sources || []).map(source => `
     <div class="kv">
       <span>${escapeHtml(source.kind)} · ${escapeHtml(source.status)}</span>
@@ -1393,7 +1404,7 @@ function renderCheckIpResult(result, address) {
       <h3>${t("birdRoutes")}</h3>
       <div class="route-list">${routes || "—"}</div>
       <h3>${t("sources")}</h3>
-      <div class="kv-grid">${sources || `<div class="kv"><strong>—</strong></div>`}</div>
+      <div class="kv-grid">${(dynamicSource + sources) || `<div class="kv"><strong>—</strong></div>`}</div>
       <details><summary>${t("rawDetails")}</summary>${renderDataTree(result)}</details>
     </div>`;
 }
