@@ -1,9 +1,15 @@
 import argparse
+from contextlib import closing
 import ipaddress
 import json
 import re
 from pathlib import Path
+import sqlite3
+import subprocess
 import sys
+
+from . import bird_cli
+from .bgp_feed import SYNC_PREFIX
 
 
 IPV4_RE = re.compile(r"(?<![\d.])(?:\d{1,3}\.){3}\d{1,3}(?:/\d{1,2})?(?![\d.])")
@@ -106,6 +112,23 @@ def find_sources(address, status):
     return result
 
 
+def find_dns_origin(address, database):
+    if not database.is_file():
+        return None
+    try:
+        with closing(sqlite3.connect(database.resolve().as_uri() + "?mode=ro", uri=True, timeout=0.5)) as db:
+            row = db.execute("SELECT domain, rule, added_at FROM dns_route_origins WHERE address=?",
+                             (str(address),)).fetchone()
+    except sqlite3.Error as exc:
+        if str(exc) != "no such table: dns_route_origins":
+            print(f"DNS route origin lookup failed: {exc}", file=sys.stderr)
+        return None
+    if row is not None:
+        domain, rule, added_at = row
+        return {"domain": domain, "rule": rule, "added_at": added_at}
+    return None
+
+
 def load_status(path):
     if not path.exists():
         return {"sources": []}
@@ -114,15 +137,12 @@ def load_status(path):
         return json.load(file)
 
 
-def render_result(address, route_matches, source_results):
-    lines = [f"IP: {address}"]
+def render_result(address, route_matches, source_results, *, live=False):
+    scope = "BIRD routes" if live else "Generated routes"
+    lines = [f"IP: {address}", f"{scope}: {'yes' if route_matches else 'no'}"]
 
-    if route_matches:
-        lines.append("Generated routes: yes")
-        for network in route_matches:
-            lines.append(f"  - {network}")
-    else:
-        lines.append("Generated routes: no")
+    for network in route_matches:
+        lines.append(f"  - {network}")
 
     if source_results:
         lines.append("Sources:")
@@ -161,6 +181,7 @@ def main(argv=None):
     parser.add_argument("ip", help="IPv4 address to check")
     parser.add_argument("--routes", default="/etc/bird/generated/routes.conf")
     parser.add_argument("--status", default="/etc/bird/generated/status.json")
+    parser.add_argument("--live", action="store_true", help="Query BIRD's current routing table.")
     parser.add_argument("--json", action="store_true", help="Print machine-readable JSON output.")
     args = parser.parse_args(argv)
 
@@ -174,14 +195,32 @@ def main(argv=None):
         print("Only IPv4 addresses are supported by this project", file=sys.stderr)
         return 2
 
-    routes = read_networks(Path(args.routes), extract=True)
+    dns_origin = None
+    if args.live:
+        try:
+            output = bird_cli.query(3, "show", "route", "for", str(address), "primary")
+        except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
+            detail = getattr(exc, "stderr", None) or str(exc)
+            print(f"BIRD route lookup failed: {detail.strip()}", file=sys.stderr)
+            return 2
+        # The DNS synchronization marker is internal to BIRD.
+        rows = bird_cli.IPV4_ROUTE_ROW.findall(output)
+        rows = [(prefix, row) for prefix, row in rows if prefix != SYNC_PREFIX or "[dns_live " not in row]
+        routes = [ipaddress.IPv4Network(prefix) for prefix, _ in rows]
+        if any(prefix == f"{address}/32" and "[dns_live " in row for prefix, row in rows):
+            dns_origin = find_dns_origin(address, Path(args.routes).with_name("dns-cache.sqlite3"))
+    else:
+        routes = read_networks(Path(args.routes), extract=True)
     route_matches = matching_networks(address, routes)
     status = load_status(Path(args.status))
     source_results = find_sources(address, status)
 
     if args.json:
-        print(json.dumps(build_result(address, route_matches, source_results), indent=2, ensure_ascii=False))
+        result = build_result(address, route_matches, source_results)
+        if dns_origin is not None:
+            result["dns_origin"] = dns_origin
+        print(json.dumps(result, indent=2, ensure_ascii=False))
     else:
-        print(render_result(address, route_matches, source_results))
+        print(render_result(address, route_matches, source_results, live=args.live))
 
     return 0 if route_matches else 1

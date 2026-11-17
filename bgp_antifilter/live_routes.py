@@ -13,7 +13,7 @@ import threading
 import time
 
 from .bgp_feed import BGPFeed, SYNC_PREFIX
-from .dns_routes import RouteManager, atomic_write, domain_key, match_domain, write_json
+from .dns_routes import RouteManager, atomic_write, domain_key, write_json
 from .domain_rules import DomainRules
 
 
@@ -82,6 +82,7 @@ class IncrementalRoutes:
             self.removed.add(value)
 
     def change(self, value, included, excluded):
+        """Update one address and report whether DNS alone supplies its route."""
         address = ipaddress.IPv4Address(value)
         owner = self.baseline.find(address)
         current = self.cover.find(address)
@@ -105,6 +106,7 @@ class IncrementalRoutes:
             if current.prefixlen < 32:
                 for remaining in current.address_exclude(ipaddress.IPv4Network((address, 32))):
                     self._add(remaining)
+        return wanted and owner is None
 
     def delta(self):
         added, removed = self.added, self.removed
@@ -133,7 +135,7 @@ class LiveRoutes:
         self.index = None
         self.bootstrap_routes = set()
         self.leases, self.aliases = {}, {}
-        self.included, self.excluded = Counter(), Counter()
+        self.included, self.excluded = {}, Counter()
         self.lease_dirty, self.alias_dirty = {}, {}
         self.lease_count = self.alias_count = 0
         self.include_roots, self.exclude_roots = DomainRules(), DomainRules()
@@ -207,23 +209,22 @@ class LiveRoutes:
                 raise RuntimeError("MikroTik BGP is not established")
 
     def _classify(self, domain):
-        if match_domain(domain, self.exclude_roots):
-            return self.excluded
-        if match_domain(domain, self.include_roots):
-            return self.included
-        return None
+        if self.exclude_roots.matches(domain):
+            return True, None
+        return False, self.include_roots.matching_rule(domain)
 
-    def _lease(self, domain, address, expiry):
+    def _lease(self, domain, address, expiry, excluded, rule):
         current = self.leases.setdefault(domain, {})
         if address not in current:
             if self.lease_count >= 50000:
                 self.drop_until = time.monotonic() + 5
                 raise RuntimeError("DNS route lease limit exceeded")
             self.lease_count += 1
-            target = self._classify(domain)
-            if target is not None:
-                target[address] += 1
-                self.index.change(address, self.included[address] > 0, self.excluded[address] > 0)
+            if excluded:
+                self.excluded[address] += 1
+            else:
+                self.included.setdefault(address, {})[domain] = rule
+            self.index.change(address, address in self.included, address in self.excluded)
         current[address] = max(current.get(address, 0), expiry)
         self.lease_dirty[domain, address] = current[address]
 
@@ -235,18 +236,23 @@ class LiveRoutes:
             return False
         domain = domain_key(domain)
         now = time.time()
-        origins = {domain} if self._classify(domain) is not None else set()
-        origins.update(origin for origin, expiry in self.aliases.get(domain, {}).items()
-                       if expiry > now and self._classify(origin) is not None)
+        candidates = {domain: self._classify(domain)}
+        for origin, expiry in self.aliases.get(domain, {}).items():
+            if expiry > now and origin not in candidates:
+                candidates[origin] = self._classify(origin)
         # Client cache lifetime begins after the gated reply. Keep both IPs
         # and aliases alive for the entire possible reply delay as well.
         grace = int(os.environ.get("DNS_ROUTE_GRACE", "30")) + reply_budget
-        for origin in origins:
+        tracked = False
+        for origin, (excluded, rule) in candidates.items():
+            if not excluded and rule is None:
+                continue
+            tracked = True
             for address, ttl in addresses:
                 ip = ipaddress.IPv4Address(address)
                 expiry = received + max(1, ttl) + grace
                 if ip.is_global and expiry > now:
-                    self._lease(origin, str(ip), expiry)
+                    self._lease(origin, str(ip), expiry, excluded, rule)
             for target, ttl in targets:
                 target = domain_key(target)
                 expiry = received + max(1, ttl) + grace
@@ -260,7 +266,7 @@ class LiveRoutes:
                     self.alias_count += 1
                 current[origin] = max(current.get(origin, 0), expiry)
                 self.alias_dirty[target, origin] = current[origin]
-        return bool(origins)
+        return tracked
 
     def _expire(self, now):
         for domain, items in list(self.leases.items()):
@@ -269,57 +275,82 @@ class LiveRoutes:
                     continue
                 del items[address]
                 self.lease_count -= 1
-                target = self._classify(domain)
-                if target is not None and self.index is not None:
-                    target[address] -= 1
-                    if target[address] <= 0:
-                        del target[address]
-                    self.index.change(address, self.included[address] > 0, self.excluded[address] > 0)
+                if self.index is not None:
+                    excluded, rule = self._classify(domain)
+                    if excluded:
+                        self.excluded[address] -= 1
+                        if self.excluded[address] == 0:
+                            del self.excluded[address]
+                    elif rule is not None:
+                        domains = self.included[address]
+                        del domains[domain]
+                        if not domains:
+                            del self.included[address]
+                    if excluded or rule is not None:
+                        self.index.change(address, address in self.included, address in self.excluded)
                 self.lease_dirty[domain, address] = None
             if not items:
                 del self.leases[domain]
         for target, origins in list(self.aliases.items()):
             for origin, expiry in list(origins.items()):
-                if expiry <= now or (self.policy is not None and self._classify(origin) is None):
+                if expiry <= now or (self.policy is not None and not any(self._classify(origin))):
                     del origins[origin]
                     self.alias_count -= 1
                     self.alias_dirty[target, origin] = None
             if not origins:
                 del self.aliases[target]
 
+    def _save_route_origins(self, added, removed):
+        # Keep the original cause while a route remains active.
+        self.db.executemany("DELETE FROM dns_route_origins WHERE address=?", ((address,) for address in removed))
+        self.db.executemany("INSERT OR IGNORE INTO dns_route_origins VALUES(?,?,?,?)", added)
+
     def _persist(self):
-        if self.lease_dirty or self.alias_dirty:
+        added, removed = (self.index.added, self.index.removed) if self.index is not None else ((), ())
+        if self.lease_dirty or self.alias_dirty or added or removed:
+            now = time.time()
+            new_origins = []
+            for route in added:
+                if route.endswith("/32"):
+                    address = route[:-3]
+                    domains = self.included.get(address)
+                    if domains and self.index.baseline.find(ipaddress.IPv4Address(address)) is None:
+                        domain, rule = next(iter(domains.items()))
+                        new_origins.append((address, domain, rule, now))
             with self.db:
                 for table, changes in (("leases", self.lease_dirty), ("aliases", self.alias_dirty)):
                     self.db.executemany(f"DELETE FROM {table} WHERE name=? AND value=?",
                                         [(name, value) for (name, value), expiry in changes.items() if expiry is None])
                     self.db.executemany(f"INSERT INTO {table} VALUES(?,?,?) ON CONFLICT(name,value) DO UPDATE SET expiry=excluded.expiry",
                                         [(name, value, expiry) for (name, value), expiry in changes.items() if expiry is not None])
+                self._save_route_origins(new_origins, (route[:-3] for route in removed if route.endswith("/32")))
             self.lease_dirty.clear()
             self.alias_dirty.clear()
-        if self.index is not None:
-            added, removed = self.index.added, self.index.removed
-            if added or removed:
-                self.publisher.update(added, removed)
-                self.index.delta()
+        if added or removed:
+            self.publisher.update(added, removed)
+            self.index.delta()
 
-    def _new_policy(self, policy):
+    def _new_policy(self, policy, *, restoring=False):
         index = IncrementalRoutes(policy)
         if getattr(self.publisher, "sync_marker", False) and index.baseline.contains(ipaddress.IPv4Network(SYNC_PREFIX)):
             raise ValueError(f"{SYNC_PREFIX} is reserved for DNS/BIRD synchronization")
         includes, excludes = DomainRules(policy["include_domains"]), DomainRules(policy["exclude_domains"])
-        included, excluded = Counter(), Counter()
+        included, excluded = {}, Counter()
         now = time.time()
         # Remove expired owners using the old policy's counters before
         # rebuilding them. Otherwise a later expiry would subtract twice and
         # could withdraw an IP still owned by another live domain.
         self._expire(now)
         for domain, addresses in self.leases.items():
-            target = excluded if match_domain(domain, excludes) else included if match_domain(domain, includes) else None
-            if target is not None:
-                target.update(address for address, expiry in addresses.items() if expiry > now)
+            if excludes.matches(domain):
+                excluded.update(addresses.keys())
+            elif (rule := includes.matching_rule(domain)) is not None:
+                for address in addresses:
+                    included.setdefault(address, {})[domain] = rule
+        origins = {}
         for address in included.keys() | excluded.keys():
-            index.change(address, included[address] > 0, excluded[address] > 0)
+            if index.change(address, address in included, address in excluded):
+                origins[address] = next(iter(included[address].items()))
         routes = index.cover.routes()  # Full scan only on policy load/update.
         text = "".join(f"    route {value} blackhole;\n" for value in sorted(routes, key=lambda x: (int(ipaddress.IPv4Network(x).network_address), ipaddress.IPv4Network(x).prefixlen)))
         self._persist()
@@ -332,6 +363,12 @@ class LiveRoutes:
             atomic_write(files[2], text)
             with self.db:
                 self.db.execute("INSERT INTO metadata VALUES('policy',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (json.dumps(policy),))
+                previous_origins = {address for address, in self.db.execute("SELECT address FROM dns_route_origins")}
+                added_at = None if restoring else time.time()
+                self._save_route_origins(
+                    ((address, *origins[address], added_at) for address in origins.keys() - previous_origins),
+                    previous_origins - origins.keys(),
+                )
         except Exception:
             # The in-memory RIB/publisher remain unchanged on snapshot errors.
             for path, previous_text in backups.items():
@@ -377,6 +414,9 @@ class LiveRoutes:
         self.db.execute("CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
         for table in ("leases", "aliases"):
             self.db.execute(f"CREATE TABLE IF NOT EXISTS {table} (name TEXT NOT NULL, value TEXT NOT NULL, expiry REAL NOT NULL, PRIMARY KEY(name,value))")
+        self.db.execute("""CREATE TABLE IF NOT EXISTS dns_route_origins (
+            address TEXT PRIMARY KEY, domain TEXT NOT NULL, rule TEXT NOT NULL, added_at REAL
+        )""")
         row = self.db.execute("SELECT value FROM metadata WHERE key='policy'").fetchone()
         policy = json.loads(row[0]) if row else None
         if policy is None and (self.directory / "dns-policy.json").exists():
@@ -397,7 +437,7 @@ class LiveRoutes:
         self.lease_count = sum(map(len, self.leases.values()))
         self.alias_count = sum(map(len, self.aliases.values()))
         if policy is not None:
-            self._new_policy(policy)
+            self._new_policy(policy, restoring=True)
         else:
             # Upgrading a static deployment has a last-good snapshot but no
             # DNS metadata yet. Keep its BGP routes while sources refresh;

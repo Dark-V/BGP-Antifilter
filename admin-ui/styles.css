@@ -717,6 +717,7 @@ button .lucide { color: var(--cyan); }
   min-width: 0;
 }
 .kv span { display: block; color: var(--muted); font-size: 12px; margin-bottom: 5px; }
+.dns-route-rule { overflow-wrap: anywhere; }
 .kv strong {
   display: block;
   font-size: 17px;

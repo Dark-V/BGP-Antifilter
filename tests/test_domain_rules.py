@@ -57,7 +57,7 @@ class DomainRuleTests(unittest.TestCase):
         first = domain_rules.DomainRules([r"regex:^api\.forge\.com$"])
         self.assertTrue(first.matches("api.forge.com"))
         self.assertTrue(first.matches("api.forge.com"))
-        self.assertEqual(first.matches.cache_info().hits, 1)
+        self.assertEqual(first.matching_rule.cache_info().hits, 1)
         replacement = domain_rules.DomainRules([r"regex:^cdn\.forge\.com$"])
         self.assertFalse(replacement.matches("api.forge.com"))
 

@@ -4,10 +4,10 @@ import ipaddress
 import math
 import os
 import re
-import subprocess
 import threading
 import time
 
+from . import bird_cli
 from .bgp_feed import SYNC_PREFIX
 
 
@@ -50,21 +50,7 @@ class ReplyGate:
         if not self.readers.acquire(timeout=remaining(deadline)):
             raise TimeoutError("BIRD confirmation readers are busy")
         try:
-            reply = subprocess.run(["birdc", "-v", "-r", *args], capture_output=True, text=True,
-                                   timeout=remaining(deadline), check=False)
-            codes = [int(value) for value in re.findall(r"(?m)^(\d{4})[ -]", reply.stdout)]
-            # BIRD's explicit "Network not found" is CLI 8001 / exit 1.
-            # It is a valid absence result, unlike every other CLI failure.
-            absent = (args[:2] == ("show", "route") and reply.returncode == 1
-                      and codes and codes[-1] == 8001 and all(code < 8000 or code == 8001 for code in codes))
-            if reply.returncode and not absent:
-                reply.check_returncode()
-            # birdc -v prefixes continuation rows with five spaces instead of
-            # repeating their numeric code (client/client.c:server_got_reply).
-            output = re.sub(r"(?m)^(?:\d{4}[ -]| {5})", "", reply.stdout)
-            if (any(code >= 8000 for code in codes) and not absent) or 1 not in codes or not re.search(r"BIRD .* ready\.", output):
-                raise RuntimeError("BIRD rejected the route confirmation query")
-            return output
+            return bird_cli.query(remaining(deadline), *args)
         finally:
             self.readers.release()
 
@@ -79,7 +65,7 @@ class ReplyGate:
             return False
         for value, wanted in receipt.expected.items():
             table = self._bird(deadline, "show", "route", "for", value, "primary")
-            rows = re.findall(r"(?m)^(\d+\.\d+\.\d+\.\d+/\d+)\s+([^\n]+)", table)
+            rows = bird_cli.IPV4_ROUTE_ROW.findall(table)
             covering = [row for network, row in rows if ipaddress.IPv4Address(value) in ipaddress.IPv4Network(network)]
             if wanted:
                 if not any(re.search(r"\[dns_live\s", row) for row in covering):

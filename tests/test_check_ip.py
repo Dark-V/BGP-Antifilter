@@ -2,9 +2,11 @@ import contextlib
 import io
 import ipaddress
 import json
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from bgp_antifilter import check_ip
 
@@ -104,6 +106,30 @@ class CheckIpTests(unittest.TestCase):
             self.assertEqual(exit_code, 0)
             self.assertTrue(data["matched"])
             self.assertEqual(data["routes"], ["192.0.2.0/24"])
+
+    def test_live_lookup_does_not_use_generated_routes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            snapshot = root / "routes.conf"
+            snapshot.write_text("route 192.0.2.10/32 blackhole;\n", encoding="utf-8")
+            argv = ["192.0.2.10", "--live", "--json", "--routes", str(snapshot), "--status", str(root / "status.json")]
+            greeting = "0001 BIRD 2.0.12 ready.\n0018 Access restricted\n"
+            live = greeting + "1007-Table master4:\n     192.0.2.0/24 blackhole [dns_live 12:00] * (100)\n"
+            absent = greeting + "8001 Network not found\n"
+            for code, output, routes in [(0, live, ["192.0.2.0/24"]), (1, absent, [])]:
+                with mock.patch("bgp_antifilter.bird_cli.subprocess.run",
+                                return_value=subprocess.CompletedProcess([], code, output, "")) as run:
+                    exit_code, result = run_main_quiet(argv)
+                self.assertEqual(exit_code, code)
+                self.assertEqual(json.loads(result)["routes"], routes)
+                self.assertEqual(run.call_args.args[0], ["birdc", "-v", "-r", "show", "route", "for", "192.0.2.10", "primary"])
+
+    def test_live_lookup_failure_has_distinct_exit_status(self):
+        with mock.patch("bgp_antifilter.bird_cli.subprocess.run",
+                        side_effect=subprocess.TimeoutExpired("birdc", 3)):
+            exit_code, result = run_main_quiet(["192.0.2.10", "--live", "--json"])
+        self.assertEqual(exit_code, 2)
+        self.assertEqual(result, "")
 
 
 if __name__ == "__main__":

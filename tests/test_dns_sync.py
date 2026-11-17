@@ -14,7 +14,7 @@ import dns.message
 import dns.rcode
 import dns.rrset
 
-from bgp_antifilter import bgp_feed, dns_proxy, dns_sync, live_routes
+from bgp_antifilter import bgp_feed, bird_cli, dns_proxy, dns_sync, live_routes
 from tests.test_live_routes import Publisher, policy
 
 
@@ -187,13 +187,13 @@ class BirdConfirmationTests(unittest.TestCase):
     def test_bird_cli_errors_are_not_mistaken_for_absent_routes(self):
         for body in ("syntax error", "Access denied", "No such protocol"):
             result = subprocess.CompletedProcess([], 0, "0001 " + self.header + "9001 " + body, "")
-            with mock.patch.object(dns_sync.subprocess, "run", return_value=result):
+            with mock.patch.object(bird_cli.subprocess, "run", return_value=result):
                 with self.assertRaises(RuntimeError):
                     self.gate._bird(time.monotonic() + 1, "show", "route", "for", "1.1.1.1")
 
     def test_numeric_status_does_not_reject_valid_protocol_names_containing_error(self):
         result = subprocess.CompletedProcess([], 0, "0001 " + self.header + "2002-bgperror BGP master4 up Established\n", "")
-        with mock.patch.object(dns_sync.subprocess, "run", return_value=result):
+        with mock.patch.object(bird_cli.subprocess, "run", return_value=result):
             self.assertIn("Established", self.gate._bird(time.monotonic() + 1, "show", "protocols", "bgperror"))
 
     def test_verbose_continuation_rows_confirm_real_route_and_absence(self):
@@ -202,17 +202,17 @@ class BirdConfirmationTests(unittest.TestCase):
         route = prefix + "     93.184.216.0/24 blackhole [dns_live 12:00] * (100)\n"
         absent = "0001 BIRD 2.0.12 ready.\n0018 Access restricted\n8001 Network not found\n"
         results = [subprocess.CompletedProcess([], code, body, "") for code, body in ((0, marker), (0, route), (1, absent))]
-        with mock.patch.object(dns_sync.subprocess, "run", side_effect=results):
+        with mock.patch.object(bird_cli.subprocess, "run", side_effect=results):
             self.assertTrue(self.gate._confirmed(self.receipt, time.monotonic() + 1))
 
     def test_bird_cli_8001_exit_one_is_valid_route_absence_only(self):
         result = subprocess.CompletedProcess([], 1, "0001 BIRD 2.0.12 ready.\n0018 Access restricted\n8001 Network not found\n", "")
-        with mock.patch.object(dns_sync.subprocess, "run", return_value=result):
+        with mock.patch.object(bird_cli.subprocess, "run", return_value=result):
             self.assertIn("Network not found", self.gate._bird(time.monotonic() + 1, "show", "route", "for", "1.1.1.1"))
             with self.assertRaises(subprocess.CalledProcessError):
                 self.gate._bird(time.monotonic() + 1, "show", "protocols", "dns_live")
         result.stdout = "0001 BIRD 2.0.12 ready.\n9001 syntax error\n"
-        with mock.patch.object(dns_sync.subprocess, "run", return_value=result):
+        with mock.patch.object(bird_cli.subprocess, "run", return_value=result):
             with self.assertRaises(subprocess.CalledProcessError):
                 self.gate._bird(time.monotonic() + 1, "show", "route", "for", "1.1.1.1")
 
