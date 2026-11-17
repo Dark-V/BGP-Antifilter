@@ -6,7 +6,7 @@ LABEL org.opencontainers.image.title="BGP Antifilter" \
       org.opencontainers.image.documentation="https://github.com/Dark-V/BGP-Antifilter"
 
 RUN apt-get update \
- && apt-get install -y --no-install-recommends bird2 curl ca-certificates tini python3 python3-venv docker.io docker-compose \
+ && apt-get install -y --no-install-recommends bird2 curl ca-certificates tini python3 python3-venv docker.io docker-compose util-linux \
  && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt /requirements.txt

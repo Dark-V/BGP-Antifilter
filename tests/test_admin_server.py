@@ -5,7 +5,7 @@ import socket
 from pathlib import Path
 from unittest import mock
 
-from bgp_antifilter import admin_server
+from bgp_antifilter import admin_server, update_lock
 
 
 class AdminServerHelperTests(unittest.TestCase):
@@ -400,12 +400,11 @@ class AdminServerHelperTests(unittest.TestCase):
         self.assertEqual(payload["generation_stage"], "")
         self.assertFalse(stored["generation_active"])
 
-    def test_reconcile_runtime_state_keeps_active_runtime_when_lock_exists(self):
+    def test_reconcile_runtime_state_keeps_active_runtime_while_updater_holds_lock(self):
         with tempfile.TemporaryDirectory() as tmp:
             runtime_file = Path(tmp) / "runtime.json"
             lock_dir = Path(tmp) / "update.lock"
             runtime_file.write_text('{"generation_active": true, "generation_kind": "startup"}', encoding="utf-8")
-            lock_dir.mkdir()
 
             old_runtime = admin_server.RUNTIME_FILE
             old_lock_dir = admin_server.UPDATE_LOCK_DIR
@@ -414,7 +413,8 @@ class AdminServerHelperTests(unittest.TestCase):
             admin_server.UPDATE_LOCK_DIR = lock_dir
             admin_server.RELOAD_THREAD = None
             try:
-                payload = admin_server.reconcile_runtime_state(admin_server.json_load(runtime_file, {}))
+                with update_lock.acquire(lock_dir):
+                    payload = admin_server.reconcile_runtime_state(admin_server.json_load(runtime_file, {}))
             finally:
                 admin_server.RUNTIME_FILE = old_runtime
                 admin_server.UPDATE_LOCK_DIR = old_lock_dir
@@ -422,6 +422,34 @@ class AdminServerHelperTests(unittest.TestCase):
 
         self.assertTrue(payload["generation_active"])
         self.assertEqual(payload["generation_kind"], "startup")
+
+    def test_legacy_update_lock_can_only_be_cleared_when_idle(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            lock_dir = Path(tmp) / "update.lock"
+            lock_dir.mkdir()
+            with mock.patch.object(admin_server, "UPDATE_LOCK_DIR", lock_dir), mock.patch.object(admin_server, "RELOAD_THREAD", None):
+                with update_lock.acquire(lock_dir):
+                    self.assertFalse(admin_server.can_clear_legacy_update_lock())
+                    with self.assertRaises(update_lock.UpdateLockBusy):
+                        admin_server.clear_legacy_update_lock()
+                self.assertTrue(lock_dir.is_dir())
+                self.assertTrue(admin_server.can_clear_legacy_update_lock())
+                self.assertTrue(admin_server.clear_legacy_update_lock())
+                self.assertFalse(lock_dir.exists())
+                self.assertFalse(admin_server.reload_lock_active())
+                self.assertFalse(admin_server.clear_legacy_update_lock())
+
+    def test_clear_update_lock_rejects_a_nonempty_directory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            lock_dir = Path(tmp) / "update.lock"
+            lock_dir.mkdir()
+            marker = lock_dir / "owner"
+            marker.write_text("keep", encoding="utf-8")
+            with mock.patch.object(admin_server, "UPDATE_LOCK_DIR", lock_dir), mock.patch.object(admin_server, "RELOAD_THREAD", None):
+                self.assertFalse(admin_server.can_clear_legacy_update_lock())
+                with self.assertRaisesRegex(RuntimeError, "not an empty directory"):
+                    admin_server.clear_legacy_update_lock()
+            self.assertEqual(marker.read_text(encoding="utf-8"), "keep")
 
     def test_external_ip_summary_parses_success_payload(self):
         body = (

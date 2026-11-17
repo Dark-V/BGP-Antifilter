@@ -24,6 +24,19 @@ if [ -f "$SETTINGS_ENV_FILE" ]; then
 fi
 
 mkdir -p /etc/bird/generated "$CACHE_DIR"
+
+# Keep this descriptor open in the updater and its children. The kernel
+# releases the lock when the last holder exits.
+exec 9>>"${LOCK_DIR}.flock"
+if ! flock -n 9; then
+  echo "Another route update is already running: ${LOCK_DIR}.flock" >&2
+  exit 1
+fi
+if [ -e "$LOCK_DIR" ] || [ -L "$LOCK_DIR" ]; then
+  echo "Legacy update.lock remains: remove it from the panel before reloading routes" >&2
+  exit 1
+fi
+
 touch "$ROUTES"
 touch "$LAST_GOOD_ROUTES"
 
@@ -34,7 +47,6 @@ if [ -s "$LAST_GOOD_ROUTES" ]; then
 else
   cp "$ROUTES" "$tmp_old"
 fi
-lock_acquired=0
 runtime_state_written=0
 
 write_runtime_state() {
@@ -165,19 +177,9 @@ cleanup() {
   if [ "$runtime_state_written" = "1" ]; then
     write_runtime_state 0 "" "" ""
   fi
-  if [ "$lock_acquired" = "1" ]; then
-    rmdir "$LOCK_DIR" 2>/dev/null || true
-  fi
   rm -f "$tmp_old" "$tmp_new" "$tmp_new.dns.json"
 }
 trap cleanup EXIT
-
-if mkdir "$LOCK_DIR" 2>/dev/null; then
-  lock_acquired=1
-else
-  echo "Another route update is already running: $LOCK_DIR" >&2
-  exit 1
-fi
 
 write_runtime_state 1 "${ROUTE_UPDATE_REASON:-manual}" "${ROUTE_UPDATE_MESSAGE:-Running manual route update}" "$(date +%s)" 0 "bootstrap" "Preparing route update"
 runtime_state_written=1
