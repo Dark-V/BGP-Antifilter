@@ -8,7 +8,7 @@ const dict = {
     failed: "Failed", never: "never", loadMetrics: "Load metrics", loadRoutes: "Load routes",
     commandOk: "Command completed", commandFailed: "Command failed", returnCode: "Return code",
     stdout: "Output", stderr: "Errors", matched: "Matched", notMatched: "Not matched",
-    generatedRoutes: "Generated routes", sources: "Sources", rawDetails: "Details",
+    birdRoutes: "Routes in BIRD", routeCheckFailed: "Route check unavailable", sources: "Sources", rawDetails: "Details",
     cache: "Cache", generator: "Generator", bird: "BIRD", mikrotik: "MikroTik",
     statusOk: "OK", statusWarn: "Warning", statusFail: "Failed", lastGeneration: "Last generation", birdUptime: "BIRD uptime",
     cacheHits: "Used from cache", cachedCount: "From cache", freshDownloads: "Fresh downloads", skippedSources: "Skipped sources", cacheTtl: "Cache TTL",
@@ -85,7 +85,7 @@ const dict = {
     failed: "Ошибка", never: "никогда", loadMetrics: "Показать метрики", loadRoutes: "Показать маршруты",
     commandOk: "Команда выполнена", commandFailed: "Команда завершилась с ошибкой", returnCode: "Код возврата",
     stdout: "Вывод", stderr: "Ошибки", matched: "Найден", notMatched: "Не найден",
-    generatedRoutes: "Маршруты", sources: "Источники", rawDetails: "Детали",
+    birdRoutes: "Маршруты в BIRD", routeCheckFailed: "Не удалось проверить маршруты", sources: "Источники", rawDetails: "Детали",
     cache: "Кеш", generator: "Генератор", bird: "BIRD", mikrotik: "MikroTik",
     statusOk: "OK", statusWarn: "Внимание", statusFail: "Ошибка", lastGeneration: "Последняя генерация", birdUptime: "Аптайм BIRD",
     cacheHits: "Использовано из кеша", cachedCount: "Из кеша", freshDownloads: "Свежие загрузки", skippedSources: "Пропущено источников", cacheTtl: "Время жизни кеша",
@@ -1366,8 +1366,14 @@ function renderDataTree(value, depth = 0) {
     </div>`;
 }
 
-function renderCheckIpResult(result) {
-  if (!result) return "";
+function renderCheckIpResult(result, address) {
+  if (!result) return `
+    <div class="result-card">
+      <div class="result-head">
+        <span class="status-pill warn">${t("routeCheckFailed")}</span>
+        <span class="result-title">${escapeHtml(address || "")}</span>
+      </div>
+    </div>`;
   const status = result.matched ? t("matched") : t("notMatched");
   const okClass = result.matched ? "ok" : "fail";
   const routes = (result.routes || []).map(route => `<span class="route-pill">${escapeHtml(route)}</span>`).join("");
@@ -1384,7 +1390,7 @@ function renderCheckIpResult(result) {
         <span class="status-pill ${okClass}">${status}</span>
         <span class="result-title">${escapeHtml(result.ip)}</span>
       </div>
-      <h3>${t("generatedRoutes")}</h3>
+      <h3>${t("birdRoutes")}</h3>
       <div class="route-list">${routes || "—"}</div>
       <h3>${t("sources")}</h3>
       <div class="kv-grid">${sources || `<div class="kv"><strong>—</strong></div>`}</div>
@@ -1395,14 +1401,18 @@ function renderCheckIpResult(result) {
 function renderCheckTargetResult(response) {
   const results = response.results || [];
   if (response.result && !results.length) return renderCheckIpResult(response.result);
-  const cards = results.map(item => renderCheckIpResult(item.result)).join("");
-  const matched = results.filter(item => item.result?.matched).length;
+  const addresses = response.addresses || [];
+  const cards = results.map((item, index) => renderCheckIpResult(item.result, addresses[index])).join("");
+  const checked = results.filter(item => item.result);
+  const matched = checked.filter(item => item.result.matched).length;
+  const incomplete = checked.length !== results.length;
+  const summary = checked.length ? `${matched}/${checked.length} ${t("matched").toLowerCase()}` : t("routeCheckFailed");
   return `
     <div class="result-card">
       <div class="result-head">
-        <span class="status-pill ${matched ? "ok" : "fail"}">${matched}/${results.length} ${t("matched").toLowerCase()}</span>
+        <span class="status-pill ${incomplete ? "warn" : matched ? "ok" : "fail"}">${summary}</span>
         <span class="result-title">${escapeHtml(response.target || "")}</span>
-        <span class="chip">${t("checkedAddresses")}: ${(response.addresses || []).length}</span>
+        <span class="chip">${t("checkedAddresses")}: ${checked.length}</span>
       </div>
       <div class="ip-result-list">${cards || "—"}</div>
       <details><summary>${t("rawDetails")}</summary>${renderDataTree(response)}</details>

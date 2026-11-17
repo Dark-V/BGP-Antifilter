@@ -1351,7 +1351,7 @@ class AdminHandler(BaseHTTPRequestHandler):
             results = []
             ok = True
             for address in addresses:
-                result = run_command(["/check-ip.py", address, "--json"], timeout=30)
+                result = run_command(["/check-ip.py", address, "--live", "--json"], timeout=30)
                 parsed = None
                 if result["stdout"]:
                     try:

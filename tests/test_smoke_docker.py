@@ -449,6 +449,9 @@ class DockerSmokeTests(unittest.TestCase):
             self.assertTrue(apply().get("ok"))
             self.assertEqual(lookup(dns_port).rcode(), dns.rcode.NOERROR)
             self.assertIn("1.1.1.1/32", self.compose("exec", "-T", "bird", "birdc", "show", "route", "for", "1.1.1.1").stdout)
+            self.assertNotIn("1.1.1.1/32", (self.generated_dir / "routes.conf").read_text())
+            lookup_result = api("/api/tools/check-ip", "POST", {"target": "1.1.1.1"})
+            self.assertEqual(lookup_result["result"]["routes"], ["1.1.1.1/32"])
             bird_id = self.compose("ps", "-q", "bird").stdout.strip()
             desired.update(DNS_SYNC_MODE="async", DNS_SYNC_TIMEOUT="0.2", DNS_SYNC_ON_TIMEOUT="forward")
             api("/api/settings", "PUT", {"values": desired})
@@ -473,6 +476,12 @@ class DockerSmokeTests(unittest.TestCase):
             self.assertTrue(apply().get("ok"))
             self.assertFalse(self.compose("ps", "-q", "dns-proxy").stdout.strip())
             self.assertIn("static_antifilter", self.compose("exec", "-T", "bird", "birdc", "show", "protocols").stdout)
+            static_result = api("/api/tools/check-ip", "POST", {"target": "93.184.216.34"})
+            self.assertEqual(static_result["result"]["routes"], ["93.184.216.0/24"])
+            self.compose("stop", "bird")
+            lookup_result = api("/api/tools/check-ip", "POST", {"target": "93.184.216.34"})
+            self.assertIsNone(lookup_result["result"])
+            self.assertEqual(lookup_result["results"][0]["returncode"], 2)
         except Exception:
             print(self.compose("logs", "admin", "bird", "dns-proxy", check=False).stdout[-14000:])
             raise
