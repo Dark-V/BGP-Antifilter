@@ -8,13 +8,14 @@ WORKFLOWS = Path(__file__).resolve().parents[1] / ".github" / "workflows"
 class ImageWorkflowTests(unittest.TestCase):
     def test_main_publishes_edge_and_sha_but_not_latest(self):
         workflow = (WORKFLOWS / "docker-publish.yml").read_text(encoding="utf-8")
-        self.assertIn("branches: [main]", workflow)
+        self.assertIn("branches: [main, dev-nightly]", workflow)
         self.assertIn("workflow_dispatch:", workflow)
         self.assertIn(
             "type=raw,value=edge,enable=${{ github.ref == 'refs/heads/main' }}",
             workflow,
         )
         self.assertIn("type=sha,prefix=sha-", workflow)
+        self.assertIn("type=raw,value=dev-nightly,enable=${{ github.ref == 'refs/heads/dev-nightly' || inputs.publish_nightly == true }}", workflow)
         self.assertNotIn("value=latest", workflow)
         self.assertNotIn("type=semver", workflow)
 
