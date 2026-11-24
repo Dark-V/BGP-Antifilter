@@ -6,6 +6,17 @@ This guide assumes the prebuilt image installation from the README.
 Run commands in the directory containing `compose.yaml` and `.env`.
 For Portainer, perform container operations through its interface.
 
+At startup, the container prepares permissions on its configuration and data
+directories, then switches to `bgp-antifilter` (`10001:10001`). Supervisor, BIRD,
+the DNS proxy, the panel, and the scheduler run without root. BIRD and DNS retain
+only permission to bind low ports (`NET_BIND_SERVICE`); the scheduler and the panel
+on ports 1024 and above need no network capabilities. Existing volumes are prepared
+automatically, preserving settings contents and mode `0600` for password files.
+
+For installations with web updates, the temporary updater container still runs
+as root. A mounted Docker socket grants control of Docker; changing the process
+UID does not restrict that access. The Portainer stack does not mount the socket.
+
 ## Editing lists
 
 Open **Lists** in the web panel, edit a list, and click **Save**.
@@ -137,9 +148,21 @@ Additional `.env` options:
 | `HEALTHCHECK_FAIL_ON_DEGRADED` | `0` | Set to `1` to mark Docker unhealthy after a failed update |
 | `HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY` | No proxy | Source downloads require a proxy |
 
-List local addresses explicitly in `NO_PROXY`.
-Custom `DNS_RESOLVERS` enable direct source downloads using custom DNS resolution,
-bypassing HTTP proxies.
+In **Settings → HTTP/HTTPS Proxy for requests**, select HTTP, HTTPS or SOCKS5 and
+enter its IP and port. If authentication is required, enter a username and password.
+The selected proxy handles all external HTTP/HTTPS requests from the service:
+source downloads, release checks and external IP lookups. Changes take effect after
+saving. If the proxy is unavailable, the request fails without falling back to a
+direct connection. SOCKS5 resolves destination names through the proxy.
+
+**Container settings** preserves `HTTP_PROXY`, `HTTPS_PROXY` and `NO_PROXY`
+exclusions. **No proxy** uses direct connections. An explicitly selected proxy
+does not use `NO_PROXY`. Custom `DNS_RESOLVERS` no longer bypass a configured proxy;
+they still resolve route domains. Local readiness checks always connect directly.
+
+The saved password is not displayed in the panel. Enter a new password to replace
+it, or click **Remove username and password** and save settings to disable authentication.
+Configuration backups include saved proxy credentials.
 
 ## Updating the application
 
@@ -168,7 +191,7 @@ Use a version tag or `latest`, the latest stable release, for a normal installat
 
 ### Correcting release numbering: 6.0.x → 1.0.1
 
-Versions 6.0.0–6.0.2 were misnumbered builds. Their work is consolidated in 1.0.1; old tags and images remain available for rollback. Old updaters consider 1.x an older version. For the first transition, follow the manual update steps above: back up your data, set `BGP_ANTIFILTER_VERSION=1.0.3` in `.env`, then run `docker compose pull` and `docker compose up -d`. For Portainer, change the stack image tag. A one-time backport of version checking also enables the panel button. Version 1.0.1 includes the corrected comparison; subsequent 1.x releases update normally.
+Versions 6.0.0–6.0.2 were misnumbered builds. Their work is consolidated in 1.0.1; old tags and images remain available for rollback. Old updaters consider 1.x an older version. For the first transition, follow the manual update steps above: back up your data, set `BGP_ANTIFILTER_VERSION=1.0.4` in `.env`, then run `docker compose pull` and `docker compose up -d`. For Portainer, change the stack image tag. A one-time backport of version checking also enables the panel button. Version 1.0.1 includes the corrected comparison; subsequent 1.x releases update normally.
 
 ### Web updates for repository deployments
 
@@ -311,9 +334,9 @@ Additional checks:
 ```bash
 docker compose exec bgp-antifilter birdc show protocols
 docker compose exec bgp-antifilter /check-ip.py 1.2.3.4
-docker compose exec bgp-antifilter /update-routes.py --check-sources
-docker compose exec bgp-antifilter /update-routes.py --dry-run
-docker compose exec bgp-antifilter /reload-routes.sh
+docker compose exec --user 10001:10001 bgp-antifilter /update-routes.py --check-sources
+docker compose exec --user 10001:10001 bgp-antifilter /update-routes.py --dry-run
+docker compose exec --user 10001:10001 bgp-antifilter /reload-routes.sh
 ```
 
 The last command applies routes; the others inspect status and data.

@@ -10,7 +10,9 @@ import urllib.error
 import urllib.request
 from urllib.parse import urljoin, urlsplit
 
-from .. import __version__, dns_resolver, generate_routes
+from .. import __version__, dns_resolver
+from ..http_proxy import open_url, uses_proxy
+from ..ipv4_sources import extract_ipv4_candidates
 from ..logging import progress
 from ..update_config import env_float
 
@@ -54,6 +56,10 @@ def fetch_via_custom_dns(url, *, timeout, nameservers):
     dns_timeout = env_float("DNS_RESOLVE_TIMEOUT", dns_resolver.DEFAULT_TIMEOUT)
 
     for _ in range(DEFAULT_DNS_HTTP_REDIRECTS + 1):
+        if uses_proxy(current_url):
+            request = urllib.request.Request(current_url, headers=headers)
+            with open_url(request, timeout=timeout) as response:
+                return response.read().decode("utf-8", errors="replace").replace("\r", "")
         parts = urlsplit(current_url)
         if parts.scheme not in {"http", "https"}:
             raise RuntimeError(f"unsupported URL scheme: {parts.scheme}")
@@ -119,9 +125,9 @@ def fetch_url(url, timeout=None, attempts=None, delay=None, progress_callback=No
         if progress_callback is not None:
             progress_callback(attempt + 1, attempts)
         try:
-            if dns_nameservers:
+            if dns_nameservers and not uses_proxy(url):
                 return fetch_via_custom_dns(url, timeout=timeout, nameservers=dns_nameservers)
-            with urllib.request.urlopen(request, timeout=timeout) as response:
+            with open_url(request, timeout=timeout) as response:
                 return response.read().decode("utf-8", errors="replace").replace("\r", "")
         except (urllib.error.URLError, TimeoutError, OSError) as exc:
             last_error = exc
@@ -136,7 +142,7 @@ def fetch_url(url, timeout=None, attempts=None, delay=None, progress_callback=No
 def count_source_routes(text, *, extract=True):
     count = 0
     for line in text.splitlines():
-        values = generate_routes.IPV4_RE.findall(line) if extract else [line.strip()]
+        values = extract_ipv4_candidates(line) if extract else [line.strip()]
         for value in values:
             if not value:
                 continue

@@ -224,7 +224,7 @@ function renderListHint(name) {
       ? "listHintCountries"
       : name === "google-ranges"
         ? "listHintGoogleRanges"
-        : "";
+        : ["include-domains", "exclude-domains"].includes(name) ? "listHintDomains" : "";
   $("list-hint").textContent = key ? t(key) : "";
   $("list-hint").classList.toggle("hidden", !key);
 }

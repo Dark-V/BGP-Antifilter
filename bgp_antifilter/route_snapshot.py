@@ -4,10 +4,31 @@ import hashlib
 import ipaddress
 import json
 from pathlib import Path
+import time
 
 from .check_ip import parse_networks_from_text
 from .generate_routes import collapse_routes
 from .state_store import read_state
+
+
+def confirmed_snapshot(snapshot, now=None):
+    """Static source checkpoint; live DNS leases remain in their own TTL store."""
+    now = int(time.time()) if now is None else now
+    status = {**snapshot["status"], "success": True, "generation_success": True, "apply_success": True,
+              "degraded": False, "degraded_reason": "", "last_successful_apply_timestamp_seconds": now}
+    return {**snapshot, "applied_at_unix": now, "status": status}
+
+
+def publish_checkpoint(snapshot, publication):
+    from .route_output import write_metrics, write_text
+    from .state_store import write_state
+    last_good = Path(publication["last_good_routes_file"])
+    text = route_text(snapshot["prefixes"])
+    write_text(Path(publication["routes_file"]), text)
+    write_text(last_good, text)
+    write_state(snapshot_path(last_good), snapshot)
+    write_state(Path(publication["status_file"]), snapshot["status"])
+    write_metrics(Path(publication["metrics_file"]), snapshot["status"])
 
 
 def snapshot_path(routes):

@@ -46,7 +46,10 @@ def write_text_atomic(path, text):
         file.write(text)
     try:
         if path.exists():
-            os.chmod(tmp, path.stat().st_mode & 0o777)
+            previous = path.stat()
+            if os.name != "nt" and os.geteuid() == 0:
+                os.chown(tmp, previous.st_uid, previous.st_gid)
+            os.chmod(tmp, previous.st_mode & 0o777)
         tmp.replace(path)
     except OSError as exc:
         if exc.errno not in (errno.EBUSY, errno.EACCES, errno.EPERM):
@@ -71,9 +74,22 @@ def version_value():
 
 def configured_version_setting():
     try:
+        return local_version_setting()
+    except PermissionError:
+        return privileged_update_metadata()["version"]
+
+
+def local_version_setting():
+    try:
         text = ENV_FILE.read_text(encoding="utf-8")
+    except PermissionError:
+        raise
     except OSError:
         return ""
+    return version_pin_from_text(text)
+
+
+def version_pin_from_text(text):
     for line in text.splitlines():
         current = line.strip()
         if not current or current.startswith("#"):
@@ -88,6 +104,43 @@ def configured_version_setting():
         except ValueError:
             break
     return ""
+
+
+def local_update_metadata():
+    def exists(path):
+        try:
+            path.stat()
+        except (FileNotFoundError, NotADirectoryError):
+            return False
+        return True
+    return {"workspace_exists": exists(WORKSPACE_DIR), "compose_exists": exists(COMPOSE_FILE),
+            "version": local_version_setting()}
+
+
+def privileged_update_metadata():
+    # Preserve private host directory and .env permissions. The existing Docker
+    # updater authority reads only existence flags and the validated release pin.
+    try:
+        context = deployment_context()
+        output = run_docker("exec", "--user", "0:0", context["container"],
+                            "python3", "-m", "bgp_antifilter.updater_server", "--read-update-metadata")
+        value = json.loads(output)
+        if (not isinstance(value, dict) or set(value) != {"workspace_exists", "compose_exists", "version"}
+                or type(value["workspace_exists"]) is not bool or type(value["compose_exists"]) is not bool
+                or not isinstance(value["version"], str)):
+            raise ValueError("invalid update metadata")
+        if value["version"]:
+            value["version"] = validate_version(value["version"])
+        return value
+    except (OSError, RuntimeError, ValueError, subprocess.TimeoutExpired) as exc:
+        raise RuntimeError(f"cannot read update metadata from workspace: metadata probe failed: {exc}") from exc
+
+
+def update_metadata():
+    try:
+        return local_update_metadata()
+    except PermissionError:
+        return privileged_update_metadata()
 
 
 def configured_version():
@@ -282,11 +335,15 @@ def deployment_context():
 def health_status():
     if os.environ.get("PORTAINER_MANAGED", "0") == "1":
         return False, "Image updates are managed by Portainer; update the stack image there"
-    if not WORKSPACE_DIR.exists():
+    try:
+        metadata = update_metadata()
+    except (OSError, RuntimeError) as exc:
+        return False, str(exc)
+    if not metadata["workspace_exists"]:
         return False, f"workspace directory not found: {WORKSPACE_DIR}"
-    if not COMPOSE_FILE.exists():
+    if not metadata["compose_exists"]:
         return False, f"compose file not found: {COMPOSE_FILE}"
-    if not configured_version_setting():
+    if not metadata["version"]:
         return False, "self-update is disabled for local dev builds; set BGP_ANTIFILTER_VERSION in .env to pin a release image tag"
     try:
         _, cleanup_path = compose_base_command()
@@ -391,7 +448,8 @@ def wait_for_services(version, timeout=None):
                                         "import json, os, urllib.request; "
                                         "from bgp_antifilter import __version__; "
                                         "port = os.environ.get('ADMIN_PORT', '8080'); "
-                                        "response = urllib.request.urlopen('http://127.0.0.1:' + port + '/api/session', timeout=5); "
+                                        "opener = urllib.request.build_opener(urllib.request.ProxyHandler({})); "
+                                        "response = opener.open('http://127.0.0.1:' + port + '/api/session', timeout=5); "
                                         "assert json.load(response)['version'] == __version__; print(__version__)")
                     if actual != version:
                         raise RuntimeError(f"running version {actual} does not match {version}")
@@ -541,7 +599,7 @@ def start_update(version):
             raise ValueError("target version must be newer than the configured version")
         context = deployment_context()
         # A deterministic Docker name also prevents duplicate workers across restarts.
-        command = ["run", "-d", "--rm", "--no-healthcheck", "--name", context["worker"],
+        command = ["run", "-d", "--rm", "--no-healthcheck", "--user", "0:0", "--name", context["worker"],
                    "--label", "bgp-antifilter.updater=true", "--volumes-from", context["container"],
                    "--volume", f'{context["directory"]}:{context["directory"]}',
                    "--entrypoint", "python3"]
@@ -577,4 +635,10 @@ def start_update(version):
 
 if __name__ == "__main__":
     import sys
-    apply_update(validate_version(sys.argv[1]))
+    if sys.argv[1:] == ["--read-update-metadata"]:
+        try:
+            print(json.dumps(local_update_metadata()))
+        except OSError:
+            raise SystemExit("cannot read update metadata from workspace")
+    else:
+        apply_update(validate_version(sys.argv[1]))

@@ -1,9 +1,7 @@
 import ipaddress
-import re
 import sys
 
-
-IPV4_RE = re.compile(r"(?<![\d.])(?:\d{1,3}\.){3}\d{1,3}(?:/\d{1,2})?(?![\d.])")
+from .ipv4_sources import extract_ipv4_candidates
 
 
 def read_networks(path, *, extract=False):
@@ -12,7 +10,7 @@ def read_networks(path, *, extract=False):
 
     with open(path, encoding="utf-8") as file:
         for line_number, line in enumerate(file, 1):
-            values = IPV4_RE.findall(line) if extract else [line.strip()]
+            values = extract_ipv4_candidates(line) if extract else [line.strip()]
 
             for value in values:
                 if not value:

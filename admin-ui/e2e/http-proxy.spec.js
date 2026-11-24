@@ -1,0 +1,171 @@
+import { test, expect } from "@playwright/test";
+
+async function openMenu(page) {
+  const toggle = page.locator("#menu-toggle");
+  if (await toggle.isVisible() && await toggle.getAttribute("aria-expanded") === "false") await toggle.click();
+}
+
+async function language(page, code) {
+  await openMenu(page);
+  await page.locator(`#lang-${code}`).click();
+  const menu = page.locator("#menu-toggle");
+  if (await menu.isVisible() && await menu.getAttribute("aria-expanded") === "true") await menu.click();
+}
+
+async function expectCompactCards(page) {
+  for (const key of ["DNS_WORKERS", "HTTP_PROXY_HOST"]) {
+    const geometry = await page.locator(`[data-setting-key="${key}"]`).evaluate(input => {
+      const card = input.closest(".setting-card");
+      const head = card.querySelector(".setting-head").getBoundingClientRect();
+      const control = card.querySelector(".setting-control").getBoundingClientRect();
+      const last = card.lastElementChild.getBoundingClientRect();
+      return {controlGap: control.top - head.bottom, bottomGap: card.getBoundingClientRect().bottom - last.bottom};
+    });
+    expect(geometry.controlGap, `${key} control follows its label`).toBeGreaterThanOrEqual(8);
+    expect(geometry.controlGap, `${key} control follows its label`).toBeLessThanOrEqual(12);
+    expect(geometry.bottomGap, `${key} card fits its content`).toBeLessThanOrEqual(14);
+  }
+}
+
+test("HTTP proxy settings save type, address and port and retain container defaults", async ({page, request}, testInfo) => {
+  await request.post("/__test/reset");
+  await page.goto("/");
+  await page.locator("#password").fill("browser-test");
+  await page.locator("#login-form button").click();
+  await expect(page.locator("#admin-view")).toBeVisible();
+  await page.request.put("/api/settings", {data: {values: {UPDATE_INTERVAL: "86400"}}});
+  await openMenu(page);
+  await page.locator('[data-view="settings"]').click();
+  const type = page.getByLabel("Proxy type", {exact: true});
+  const host = page.getByLabel("Proxy IP", {exact: true});
+  const port = page.getByLabel("Proxy port", {exact: true});
+  await expect(type).toHaveValue("environment");
+  await expect(host).toBeHidden();
+  await expect(port).toBeHidden();
+  await expect(page.locator('[data-setting-key="UPDATE_INTERVAL"]')).toHaveValue("1440");
+  await type.selectOption("socks5");
+  await expect(host).toBeVisible();
+  await expect(port).toBeVisible();
+  await host.fill("192.0.2.80");
+  await port.fill("1080");
+  await expectCompactCards(page);
+  await page.locator("#save-settings-btn").click();
+  await expect(page.locator("#settings-save-status")).toContainText("Saved");
+  let values = (await (await page.request.get("/api/settings")).json()).values;
+  expect(values.HTTP_PROXY_TYPE).toBe("socks5");
+  expect(values.HTTP_PROXY_HOST).toBe("192.0.2.80");
+  expect(values.HTTP_PROXY_PORT).toBe("1080");
+  expect(values.UPDATE_INTERVAL).toBe("86400");
+  await openMenu(page);
+  await page.locator("#lang-ru").click();
+  const menu = page.locator("#menu-toggle");
+  if (await menu.isVisible() && await menu.getAttribute("aria-expanded") === "true") await menu.click();
+  await expect(page.getByLabel("Тип прокси", {exact: true})).toHaveValue("socks5");
+  await expect(page.getByLabel("IP прокси", {exact: true})).toHaveValue("192.0.2.80");
+  await expect(page.locator("#settings")).toContainText("все внешние HTTP/HTTPS-запросы");
+  await expect(page.locator('[data-i18n="settingsHint"]')).toHaveText("Чтобы сохранить настройки, нажмите кнопку внизу страницы. Для части настроек потребуется перезапуск контейнера.");
+  await expect(page.locator('[data-setting-key="UPDATE_INTERVAL"]').locator("..").locator(".unit")).toHaveText("минут");
+  await expectCompactCards(page);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBeTruthy();
+  await page.screenshot({path: testInfo.outputPath("http-proxy-settings.png"), fullPage: true});
+  await page.getByLabel("Тип прокси", {exact: true}).selectOption("none");
+  await expect(page.getByLabel("IP прокси", {exact: true})).toBeHidden();
+  await page.locator("#save-settings-btn").click();
+  await expect(page.locator("#settings-save-status")).toContainText("Сохранено");
+  values = (await (await page.request.get("/api/settings")).json()).values;
+  expect(values.HTTP_PROXY_TYPE).toBe("none");
+  await page.reload();
+  await openMenu(page);
+  await page.locator('[data-view="settings"]').click();
+  await expect(page.getByLabel("Тип прокси", {exact: true})).toHaveValue("none");
+  await expect(page.getByLabel("IP прокси", {exact: true})).toBeHidden();
+});
+
+test("optional proxy credentials preserve saved secrets, language changes and explicit removal", async ({page, request}, testInfo) => {
+  await request.post("/__test/reset");
+  await page.goto("/");
+  await page.locator("#password").fill("browser-test");
+  await page.locator("#login-form button").click();
+  await expect(page.locator("#admin-view")).toBeVisible();
+  await openMenu(page);
+  await page.locator('[data-view="settings"]').click();
+  const field = key => page.locator(`[data-setting-key="HTTP_PROXY_${key}"]`);
+  await expect(field("USERNAME")).toBeHidden();
+  await expect(field("PASSWORD")).toBeHidden();
+  await field("TYPE").selectOption("http");
+  await field("HOST").fill("192.0.2.80");
+  await field("PORT").fill("8080");
+  await expect(page.getByRole("heading", {name: "HTTP/HTTPS Proxy for requests", exact: true})).toBeVisible();
+  await expect(field("PASSWORD")).toHaveAttribute("type", "password");
+  await expect(field("PASSWORD")).toHaveAttribute("autocomplete", "new-password");
+  expect(await field("USERNAME").evaluate(input => input.required)).toBeFalsy();
+  expect(await field("PASSWORD").evaluate(input => input.required)).toBeFalsy();
+  await expect(field("PASSWORD").locator("../..")).toContainText("optional");
+  const username = " route-reader ";
+  const password = ' example <&" password ';
+  await field("USERNAME").fill(username);
+  await field("PASSWORD").fill(password);
+  await language(page, "ru");
+  await expect(page.getByRole("heading", {name: "HTTP/HTTPS Прокси для запросов маршрутов", exact: true})).toBeVisible();
+  await expect(page.getByLabel("Имя пользователя прокси", {exact: true})).toHaveValue(username);
+  await expect(page.getByLabel("Пароль прокси", {exact: true})).toHaveValue(password);
+  await expect(field("PASSWORD")).toHaveAttribute("value", "");
+  expect(await page.locator("body").textContent()).not.toContain(password);
+  await expectCompactCards(page);
+  const firstSave = page.waitForRequest(req => req.url().endsWith("/api/settings") && req.method() === "PUT");
+  await page.locator("#save-settings-btn").click();
+  expect((await firstSave).postDataJSON().values.HTTP_PROXY_PASSWORD).toBe(password);
+  await expect(page.locator("#settings-save-status")).toContainText("Сохранено");
+  await expect(field("PASSWORD")).toHaveValue("");
+  await expect(field("PASSWORD")).toHaveAttribute("placeholder", "Пароль сохранён");
+  const settings = async () => (await (await page.request.get("/api/settings")).json());
+  const passwordItem = data => data.sections.flatMap(section => section.items).find(item => item.key === "HTTP_PROXY_PASSWORD");
+  let data = await settings();
+  expect(data.values.HTTP_PROXY_USERNAME).toBe(username);
+  expect(data.values).not.toHaveProperty("HTTP_PROXY_PASSWORD");
+  expect(data.overrides).not.toHaveProperty("HTTP_PROXY_PASSWORD");
+  expect(passwordItem(data)).toMatchObject({value: "", env_value: "", has_value: true});
+  expect(JSON.stringify(data)).not.toContain(password);
+  await page.reload();
+  await openMenu(page);
+  await page.locator('[data-view="settings"]').click();
+  await expect(field("USERNAME")).toHaveValue(username);
+  await expect(field("PASSWORD")).toHaveValue("");
+  await expect(field("PASSWORD")).toHaveAttribute("placeholder", "Пароль сохранён");
+  await expectCompactCards(page);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBeTruthy();
+  await page.screenshot({path: testInfo.outputPath("http-proxy-auth-settings.png"), fullPage: true});
+  await page.locator(".settings-section").filter({has: field("TYPE")}).screenshot({path: testInfo.outputPath("http-proxy-auth-section.png")});
+  await page.locator(".settings-section").filter({has: page.locator('[data-setting-key="DNS_WORKERS"]')}).screenshot({path: testInfo.outputPath("dns-card-alignment.png")});
+  await language(page, "en");
+  await expect(page.getByLabel("Proxy password", {exact: true})).toHaveAttribute("placeholder", "Password saved");
+  await field("TYPE").selectOption("socks5");
+  await page.locator('[data-setting-key="DNS_WORKERS"]').fill("32");
+  const unrelatedSave = page.waitForRequest(req => req.url().endsWith("/api/settings") && req.method() === "PUT");
+  await page.locator("#save-settings-btn").click();
+  expect((await unrelatedSave).postDataJSON().values).not.toHaveProperty("HTTP_PROXY_PASSWORD");
+  await expect(page.locator("#settings-save-status")).toContainText("Saved");
+  expect(passwordItem(await settings()).has_value).toBeTruthy();
+  await field("PASSWORD").fill("replacement");
+  await language(page, "ru");
+  await expect(field("PASSWORD")).toHaveValue("replacement");
+  await field("PASSWORD").fill("");
+  await expect(page.locator("#save-settings-btn")).toBeDisabled();
+  await page.getByRole("button", {name: "Удалить логин и пароль", exact: true}).click();
+  await expect(field("USERNAME")).toHaveValue("");
+  await expect(field("PASSWORD")).toHaveAttribute("placeholder", "Пароль будет удалён");
+  await language(page, "en");
+  await expect(field("USERNAME")).toHaveValue("");
+  await expect(field("PASSWORD")).toHaveAttribute("placeholder", "Password will be removed");
+  expect(passwordItem(await settings()).has_value).toBeTruthy();
+  const clearSave = page.waitForRequest(req => req.url().endsWith("/api/settings") && req.method() === "PUT");
+  await page.locator("#save-settings-btn").click();
+  expect((await clearSave).postDataJSON().values).toMatchObject({HTTP_PROXY_USERNAME: "", HTTP_PROXY_PASSWORD: ""});
+  await expect(page.locator("#settings-save-status")).toContainText("Saved");
+  data = await settings();
+  expect(passwordItem(data).has_value).toBeFalsy();
+  expect(data.values.HTTP_PROXY_USERNAME).toBe("");
+  expect(data.values.HTTP_PROXY_TYPE).toBe("socks5");
+  await expect(field("PASSWORD")).toHaveAttribute("placeholder", "");
+  await expect(page.getByRole("button", {name: "Remove username and password", exact: true})).toHaveCount(0);
+});

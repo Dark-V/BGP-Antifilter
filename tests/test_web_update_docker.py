@@ -19,6 +19,7 @@ import unittest
 import urllib.error
 import urllib.request
 import uuid
+from unittest import mock
 
 from bgp_antifilter import updater_server
 
@@ -57,7 +58,10 @@ class WebUpdateDockerTests(unittest.TestCase):
                 last = exc
             time.sleep(0.5)
         runtime = (self.root / "generated/update-runtime.json")
-        details = runtime.read_text(encoding="utf-8") if runtime.exists() else "no update runtime"
+        try:
+            details = runtime.read_text(encoding="utf-8")
+        except OSError as exc:
+            details = f"update runtime is unavailable to the test runner: {exc}"
         self.fail(f"{message}: {last}\n{details}\n{self.compose('logs', '--tail=50', check=False)}")
 
     def setUp(self):
@@ -67,12 +71,16 @@ class WebUpdateDockerTests(unittest.TestCase):
         self.registry_name = self.project + "-registry"
         self.temporary = tempfile.TemporaryDirectory(prefix=self.project)
         self.root = Path(self.temporary.name)
+        # The host workspace remains private; self-update must still work.
+        self.root.chmod(0o700)
+        self.workspace_owner = (self.root.stat().st_uid, self.root.stat().st_gid)
         self.env_file = self.root / ".env"
         self.addCleanup(self.cleanup)
         if self.docker("info", "--format", "{{.OSType}}") != "linux":
             self.skipTest("requires a Linux Docker engine")
         base = os.environ.get("WEB_UPDATE_TEST_IMAGE", "bgp-antifilter:web-update-test")
         correction = os.environ.get("WEB_UPDATE_VERSION_CORRECTION") == "1"
+        self.correction = correction
         self.initial_version, self.updated_version, self.missing_version, self.broken_version = (
             ("6.0.2", "1.0.1", "1.0.2", "1.0.3") if correction else ("1.0.0", "1.0.1", "1.0.2", "1.0.3"))
         if "WEB_UPDATE_TEST_IMAGE" not in os.environ:
@@ -88,8 +96,8 @@ class WebUpdateDockerTests(unittest.TestCase):
             "#!/usr/bin/env python3\nfrom pathlib import Path\n"
             "from bgp_antifilter.admin import updates\n"
             "from bgp_antifilter.admin.server import main\n"
-            "def latest():\n"
-            "    v = Path('/workspace/latest').read_text().strip()\n"
+            "def latest(timeout=5, settings=None):\n"
+            "    v = Path('/test-release').read_text().strip()\n"
             "    return dict(version=v, tag_name='v'+v, html_url='https://example.test/release', name='Test', published_at='')\n"
             "updates.github_latest_release = latest\nraise SystemExit(main())\n", encoding="utf-8")
         helper = inspect.getsource(updater_server.is_newer_version)
@@ -117,6 +125,9 @@ class WebUpdateDockerTests(unittest.TestCase):
         for tag in self.tags[1:]:
             self.docker("image", "rm", tag)
         self.env_file.write_text(f"# preserve this file on rollback\nBGP_ANTIFILTER_VERSION={self.initial_version}\n", encoding="utf-8")
+        if not correction:
+            self.env_file.chmod(0o600)
+        self.env_owner = (self.env_file.stat().st_uid, self.env_file.stat().st_gid)
         (self.root / "latest").write_text(self.updated_version, encoding="utf-8")
         config = self.root / "config"
         config.mkdir()
@@ -131,6 +142,7 @@ class WebUpdateDockerTests(unittest.TestCase):
             "    hostname: custom-updater-host\n"
             "    ports: ['127.0.0.1::8080']\n"
             "    volumes:\n      - './:/workspace'\n      - './config:/etc/bird/config'\n"
+            "      - './latest:/test-release:ro'\n"
             "      - './generated:/etc/bird/generated'\n      - '/var/run/docker.sock:/var/run/docker.sock'\n"
             "    environment:\n      ADMIN_ENABLED: '1'\n      ADMIN_PASSWORD: test-password\n"
             "      HOSTNAME: deliberately-wrong-hostname\n"
@@ -142,6 +154,8 @@ class WebUpdateDockerTests(unittest.TestCase):
             "      timeout: 3s\n      retries: 1\n      start_period: 1s\n", encoding="utf-8")
         self.compose("up", "-d")
         self.wait(lambda: self.info()["State"].get("Health", {}).get("Status") == "healthy", "initial image unhealthy")
+        if not correction:
+            self.make_private_runtime()
         self.login()
 
     def cleanup(self):
@@ -152,7 +166,7 @@ class WebUpdateDockerTests(unittest.TestCase):
         for tag in self.tags:
             self.docker("image", "rm", tag, check=False)
         if os.name != "nt":
-            # The application writes as root in an isolated temporary directory.
+            # Restore the isolated fixture to the test runner after both uids wrote files.
             base = os.environ.get("WEB_UPDATE_TEST_IMAGE", "bgp-antifilter:web-update-test")
             self.docker("run", "--rm", "--entrypoint", "chown", "-v", f"{self.root}:/test",
                         base, "-R", f"{os.getuid()}:{os.getgid()}", "/test", check=False)
@@ -162,7 +176,13 @@ class WebUpdateDockerTests(unittest.TestCase):
         cid = self.compose("ps", "-q", "bgp-antifilter")
         if not cid:
             raise ValueError("application is restarting")
-        return json.loads(self.docker("inspect", cid))[0]
+        result = subprocess.run(["docker", "inspect", cid], text=True, capture_output=True, timeout=20)
+        if result.returncode:
+            if any(message in result.stderr.lower() for message in
+                   (f"no such object: {cid}", f"no such container: {cid}")):
+                raise ValueError("application is restarting")
+            self.fail(f"docker inspect {cid} failed:\n{result.stdout[-3000:]}\n{result.stderr[-3000:]}")
+        return json.loads(result.stdout)[0]
 
     def api(self, path, data=None):
         info = self.info()
@@ -184,11 +204,52 @@ class WebUpdateDockerTests(unittest.TestCase):
         self.wait(lambda: self.api("/api/login", {"password": "test-password"})[1].get("ok"), "login failed")
 
     def finished(self):
-        path = self.root / "generated/update-runtime.json"
-        if not path.exists():
-            return None
-        value = json.loads(path.read_text(encoding="utf-8"))
+        # Check from the app uid: a root-owned 0600 publish must fail this test.
+        info = self.info()
+        cid = info["Id"]
+        # The original 6.0.2 image still runs as root and has /etc/bird 0750.
+        legacy = self.correction and info.get("Config", {}).get("Image") == f"{self.repository}:{self.initial_version}"
+        runtime_user = "0:0" if legacy else "10001:10001"
+        result = subprocess.run([
+            "docker", "exec", "--user", runtime_user, cid, "python3", "-c",
+            "from pathlib import Path; print(Path('/etc/bird/generated/update-runtime.json').read_text())",
+        ], text=True, capture_output=True, timeout=20)
+        if result.returncode:
+            if any(message in result.stderr.lower() for message in
+                   (f"no such container: {cid}", f"container {cid} is not running",
+                    f"container {cid} is restarting")):
+                return None
+            if "PermissionError" in result.stderr and info.get("State", {}).get("Health", {}).get("Status") == "starting":
+                # Bootstrap has not yet reassigned the previous image's files.
+                return None
+            self.fail(f"cannot read update runtime as {runtime_user}:\n{result.stderr[-3000:]}")
+        value = json.loads(result.stdout)
         return value if value.get("active") is False else None
+
+    def make_private_runtime(self):
+        self.docker("exec", "--user", "10001:10001", self.info()["Id"], "python3", "-c",
+                    "from pathlib import Path; p=Path('/etc/bird/generated/update-runtime.json'); "
+                    "p.write_text('{}'); p.chmod(0o600)")
+
+    def assert_nonroot_update_access(self):
+        info = self.info()
+        status = self.docker("exec", info["Id"], "python3", "-c",
+                             "from pathlib import Path\n"
+                             "for p in Path('/proc').glob('[0-9]*'):\n"
+                             "    try:\n"
+                             "        if b'/admin-server.py' in (p/'cmdline').read_bytes().split(b'\\0'):\n"
+                             "            print((p/'status').read_text()); break\n"
+                             "    except OSError: pass\n"
+                             "else: raise SystemExit('admin process is missing')\n")
+        self.assertIn("Uid:\t10001\t10001\t10001\t10001", status)
+        self.assertEqual((self.root.stat().st_uid, self.root.stat().st_gid), self.workspace_owner)
+        self.assertEqual(self.root.stat().st_mode & 0o777, 0o700)
+        if not self.correction:
+            self.assertEqual((self.env_file.stat().st_uid, self.env_file.stat().st_gid), self.env_owner)
+            self.assertEqual(self.env_file.stat().st_mode & 0o777, 0o600)
+            runtime = self.root / "generated/update-runtime.json"
+            self.assertEqual((runtime.stat().st_uid, runtime.stat().st_gid), (10001, 10001))
+            self.assertEqual(runtime.stat().st_mode & 0o777, 0o600)
 
     def test_real_http_upgrade_pull_failure_and_unhealthy_rollback(self):
         original_id = self.info()["Id"]
@@ -201,6 +262,7 @@ class WebUpdateDockerTests(unittest.TestCase):
         self.assertTrue(self.info()["Config"]["Image"].endswith(":" + self.updated_version))
         self.assertEqual(self.info()["State"]["Health"]["Status"], "healthy")
         self.assertEqual((self.root / "config/include-domains.txt").read_bytes(), self.marker)
+        self.assert_nonroot_update_access()
         self.login()
         self.assertEqual(self.api("/api/update/status?force=1")[1]["current_version"], self.updated_version)
 
@@ -224,6 +286,7 @@ class WebUpdateDockerTests(unittest.TestCase):
         self.assertEqual(self.info()["State"]["Health"]["Status"], "healthy")
         self.assertEqual(self.env_file.read_bytes(), stable_env)
         self.assertEqual((self.root / "config/include-domains.txt").read_bytes(), self.marker)
+        self.assert_nonroot_update_access()
         self.login()
         payload = self.api("/api/update/status?force=1")[1]
         self.assertEqual(payload["current_version"], self.updated_version)
@@ -256,6 +319,65 @@ class WindowsWebUpdateDockerTests(unittest.TestCase):
         finally:
             subprocess.run(["docker", "rm", "-f", runner], capture_output=True)
             subprocess.run(["docker", "volume", "rm", volume], check=True, capture_output=True)
+
+
+class UpdatePollingTests(unittest.TestCase):
+    def setUp(self):
+        self.integration = WebUpdateDockerTests("test_real_http_upgrade_pull_failure_and_unhealthy_rollback")
+        self.integration.correction = False
+        self.integration.repository = "example.test/update-fixture"
+        self.integration.initial_version = "6.0.2"
+        self.cid = "a" * 64
+
+    def test_removed_container_between_compose_ps_and_inspect_is_transient(self):
+        result = subprocess.CompletedProcess([], 1, "[]", f"Error: No such object: {self.cid}")
+        with mock.patch.object(self.integration, "compose", return_value=self.cid), \
+             mock.patch.object(subprocess, "run", return_value=result):
+            with self.assertRaisesRegex(ValueError, "restarting"):
+                self.integration.info()
+
+    def test_unexpected_inspect_failure_is_not_retried(self):
+        result = subprocess.CompletedProcess([], 1, "", "permission denied connecting to Docker")
+        with mock.patch.object(self.integration, "compose", return_value=self.cid), \
+             mock.patch.object(subprocess, "run", return_value=result):
+            with self.assertRaisesRegex(AssertionError, "permission denied"):
+                self.integration.info()
+
+    def test_runtime_poll_waits_for_recreated_container_but_rejects_unreadable_state(self):
+        for error in (f"Error: No such container: {self.cid}", f"Error: Container {self.cid} is not running"):
+            result = subprocess.CompletedProcess([], 1, "", error)
+            with self.subTest(error=error), mock.patch.object(self.integration, "info", return_value={"Id": self.cid}), \
+                 mock.patch.object(subprocess, "run", return_value=result):
+                self.assertIsNone(self.integration.finished())
+        result = subprocess.CompletedProcess([], 1, "", "PermissionError: update-runtime.json")
+        with mock.patch.object(self.integration, "info", return_value={"Id": self.cid}), \
+             mock.patch.object(subprocess, "run", return_value=result) as run:
+            with self.assertRaisesRegex(AssertionError, "PermissionError"):
+                self.integration.finished()
+            self.assertEqual(run.call_args.args[0][2:4], ["--user", "10001:10001"])
+
+    def test_root_poll_is_limited_to_original_legacy_image(self):
+        result = subprocess.CompletedProcess([], 0, '{"active": false}', "")
+        for correction, version, user in ((True, "6.0.2", "0:0"), (True, "1.0.1", "10001:10001"),
+                                           (False, "6.0.2", "10001:10001")):
+            self.integration.correction = correction
+            info = {"Id": self.cid, "Config": {"Image": f"{self.integration.repository}:{version}"}}
+            with self.subTest(correction=correction, version=version), \
+                 mock.patch.object(self.integration, "info", return_value=info), \
+                 mock.patch.object(subprocess, "run", return_value=result) as run:
+                self.assertEqual(self.integration.finished(), {"active": False})
+                self.assertEqual(run.call_args.args[0][2:4], ["--user", user])
+
+    def test_unreadable_runtime_is_transient_only_during_bootstrap(self):
+        result = subprocess.CompletedProcess([], 1, "", "PermissionError: update-runtime.json")
+        info = {"Id": self.cid, "State": {"Health": {"Status": "starting"}}}
+        with mock.patch.object(self.integration, "info", return_value=info), \
+             mock.patch.object(subprocess, "run", return_value=result) as run:
+            self.assertIsNone(self.integration.finished())
+            info["State"]["Health"]["Status"] = "healthy"
+            with self.assertRaisesRegex(AssertionError, "PermissionError"):
+                self.integration.finished()
+            self.assertEqual(run.call_args.args[0][2:4], ["--user", "10001:10001"])
 
 
 if __name__ == "__main__":

@@ -1,18 +1,21 @@
 import argparse
+from contextlib import closing
 import ipaddress
 import json
 import os
-import re
 from pathlib import Path
 import sys
+import sqlite3
+import subprocess
 
-
-IPV4_RE = re.compile(r"(?<![\d.])(?:\d{1,3}\.){3}\d{1,3}(?:/\d{1,2})?(?![\d.])")
+from . import bird_cli
+from .bgp_feed import SYNC_PREFIX
+from .ipv4_sources import extract_ipv4_candidates
 
 
 def parse_networks_from_text(text, *, extract):
     networks = []
-    values = IPV4_RE.findall(text) if extract else text.splitlines()
+    values = extract_ipv4_candidates(text) if extract else text.splitlines()
 
     for value in values:
         value = value.strip()
@@ -115,15 +118,31 @@ def load_status(path):
         return json.load(file)
 
 
-def render_result(address, route_matches, source_results):
+def find_dns_origin(address, database):
+    database = Path(database)
+    if not database.is_file():
+        return None
+    try:
+        with closing(sqlite3.connect(database.resolve().as_uri() + "?mode=ro", uri=True, timeout=0.5)) as db:
+            row = db.execute("SELECT domain, rule, added_at FROM dns_route_origins WHERE address=?", (str(address),)).fetchone()
+    except sqlite3.Error as exc:
+        if str(exc) != "no such table: dns_route_origins":
+            print(f"DNS route origin lookup failed: {exc}", file=sys.stderr)
+        return None
+    if row is not None:
+        return dict(zip(("domain", "rule", "added_at"), row))
+    return None
+
+
+def render_result(address, route_matches, source_results, *, live=False):
     lines = [f"IP: {address}"]
 
     if route_matches:
-        lines.append("Generated routes: yes")
+        lines.append("BIRD routes: yes" if live else "Generated routes: yes")
         for network in route_matches:
             lines.append(f"  - {network}")
     else:
-        lines.append("Generated routes: no")
+        lines.append("BIRD routes: no" if live else "Generated routes: no")
 
     if source_results:
         lines.append("Sources:")
@@ -162,6 +181,7 @@ def main(argv=None):
     parser.add_argument("ip", help="IPv4 address to check")
     parser.add_argument("--routes", default=os.environ.get("LAST_GOOD_ROUTES_FILE", "/etc/bird/generated/routes.last-good.conf"))
     parser.add_argument("--status", default="/etc/bird/generated/status.json")
+    parser.add_argument("--live", action="store_true", help="Query BIRD's current routing table.")
     parser.add_argument("--json", action="store_true", help="Print machine-readable JSON output.")
     args = parser.parse_args(argv)
 
@@ -177,6 +197,32 @@ def main(argv=None):
 
     from .route_snapshot import explain, read_confirmed
     snapshot = read_confirmed(Path(args.routes))
+    if args.live:
+        try:
+            output = bird_cli.query(3, "show", "route", "for", str(address), "primary")
+        except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
+            detail = getattr(exc, "stderr", None) or str(exc)
+            print(f"BIRD route lookup failed: {detail.strip()}", file=sys.stderr)
+            return 2
+        rows = [(prefix, row) for prefix, row in bird_cli.IPV4_ROUTE_ROW.findall(output)
+                if prefix != SYNC_PREFIX or "[dns_live " not in row]
+        routes = matching_networks(address, [ipaddress.IPv4Network(prefix) for prefix, _ in rows])
+        source_result = explain(address, snapshot) if snapshot else {}
+        sources = [(source, [ipaddress.ip_network(p) for p in source["matches"]]) for source in source_result.get("sources", [])]
+        result = {**source_result, **build_result(address, routes, sources)}
+        result.update(live=True, confirmed=bool(snapshot),
+                      exclusions=source_result.get("exclusions", []),
+                      snapshot_applied_at_unix=source_result.get("snapshot_applied_at_unix"),
+                      decision="included" if routes else "excluded" if source_result.get("exclusions") else "absent")
+        if any(prefix == f"{address}/32" and "[dns_live " in row for prefix, row in rows):
+            origin = find_dns_origin(address, Path(args.routes).with_name("dns-cache.sqlite3"))
+            if origin is not None:
+                result["dns_origin"] = origin
+        if args.json:
+            print(json.dumps(result, indent=2, ensure_ascii=False))
+        else:
+            print(render_result(address, routes, sources, live=True))
+        return 0 if routes else 1
     if snapshot:
         result = explain(address, snapshot)
         if args.json:

@@ -8,7 +8,7 @@ import {
   renderCompletedReloadOperation,
   renderStoredReloadResult
 } from "./operations.js";
-import { renderDataTree, renderRouteMath, renderSourceDetails, renderStageOutput } from "./results.js";
+import { renderDataTree, renderRouteMath, renderSourceDetails, renderSourceWarnings, renderStageOutput, sourceIssue } from "./results.js";
 import { birdUptime, renderRuntimeBanner, runtimeGenerationLabel, runtimeGenerationState } from "./runtime.js";
 import { setVersion } from "./session.js";
 
@@ -28,11 +28,12 @@ function stageState(level, title, subtitle, rows, raw) {
   return {level, title, subtitle, rows, raw};
 }
 
-function rowLevel(key) {
+function rowLevel(key, value) {
+  if (Number(value) === 0) return "";
   const normalized = String(key).toLowerCase();
-  if (["fresh", "свежие", "ok"].includes(normalized)) return "ok";
-  if (["skipped", "пропущено", "cache", "попадания в кеш", "invalid", "невалидные"].includes(normalized)) return "warn";
-  if (["failed", "ошибки", "stderr"].includes(normalized)) return "fail";
+  if ([t("fresh"), t("freshDownloads"), "ok"].some(label => label.toLowerCase() === normalized)) return "ok";
+  if ([t("skipped"), t("skippedSources"), t("invalid")].some(label => label.toLowerCase() === normalized)) return "warn";
+  if ([t("failedCount"), t("stderr")].some(label => label.toLowerCase() === normalized)) return "fail";
   return "";
 }
 
@@ -48,15 +49,17 @@ function buildStages(payload) {
   const failed = counts.failed || 0;
   const skipped = counts.skipped || 0;
   const cached = counts.cache || 0;
+  const issues = sources.map(sourceIssue).filter(Boolean);
+  const cacheFallback = sources.some(source => (source.status === "cache" && source.error) || source.cached_domains > 0);
 
   return {
     sources: stageState(
-      failed ? "fail" : skipped || cached ? "warn" : "ok",
+      failed ? "fail" : issues.length ? "warn" : "ok",
       t("sources"),
       `${sources.length} ${t("total").toLowerCase()} · ${counts.fresh || 0} ${t("fresh").toLowerCase()} · ${cached} ${t("cachedCount").toLowerCase()} · ${skipped} ${t("skipped").toLowerCase()} · ${failed} ${t("failedCount").toLowerCase()}`,
       [
         [t("fresh"), counts.fresh || 0],
-        [t("cachedCount"), cached],
+        [t("cachedCount"), cached, cacheFallback ? "warn" : ""],
         [t("skipped"), skipped],
         [t("failedCount"), failed],
       ],
@@ -67,7 +70,7 @@ function buildStages(payload) {
       t("cache"),
       cached ? `${cached} ${t("cacheUsed").toLowerCase()}` : t("noCacheUsed"),
       [
-        [t("cacheHits"), cached],
+        [t("cacheHits"), cached, cacheFallback ? "warn" : ""],
         [t("freshDownloads"), counts.fresh || 0],
         [t("skippedSources"), skipped],
         [t("cacheTtl"), formatDurationSeconds(status.cache_max_age_seconds ?? 604800)],
@@ -142,9 +145,10 @@ function renderStageDetails(stage, stageId) {
     : `<details><summary>${t("rawDetails")}</summary>${renderDataTree(stage.raw)}</details>`;
   replaceHtmlPreservingState(stageDetails, `
     <p>${escapeHtml(stage.subtitle)}</p>
+    ${["sources", "cache"].includes(stageId) && Array.isArray(stage.raw) ? renderSourceWarnings(stage.raw) : ""}
     ${stageId === "peer" && stage.level !== "ok" ? `<details><summary>${t("bgpHelp")}</summary><p class="muted">${t("bgpHint")}</p></details>` : ""}
-    ${stage.rows.length ? `<div class="${rowsClass}">${stage.rows.map(([key, value]) => `
-      <div class="kv ${rowLevel(key)}"><span>${escapeHtml(key)}</span><strong>${escapeHtml(value)}</strong></div>
+    ${stage.rows.length ? `<div class="${rowsClass}">${stage.rows.map(([key, value, level]) => `
+      <div class="kv ${Number(value) === 0 ? "" : level ?? rowLevel(key, value)}"><span>${escapeHtml(key)}</span><strong>${escapeHtml(value)}</strong></div>
     `).join("")}</div>` : ""}
     ${renderStageOutput(stage, stageId)}
     ${details}
@@ -226,4 +230,4 @@ function bindDashboardEvents() {
   });
 }
 
-export { bindDashboardEvents, buildStages, dashboardState, renderPipeline, renderStatus, tickCountdown };
+export { bindDashboardEvents, buildStages, dashboardState, renderPipeline, renderStatus, rowLevel, tickCountdown };

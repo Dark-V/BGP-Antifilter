@@ -2,11 +2,12 @@
 import { locale, t } from "./i18n.js";
 
 function formatCountdown(ts) {
-  if (!ts) return "-";
+  if (!ts || !Number.isFinite(Number(ts))) return "-";
   const seconds = Math.max(0, Math.floor(ts - Date.now() / 1000));
-  const minutes = Math.floor(seconds / 60);
-  const rest = seconds % 60;
-  return `${minutes}:${String(rest).padStart(2, "0")}`;
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor(seconds / 60) % 60;
+  const clock = [minutes, seconds % 60].map(value => String(value).padStart(2, "0")).join(":");
+  return hours ? `${String(hours).padStart(2, "0")}:${clock}` : clock;
 }
 
 function formatDateTime(value) {

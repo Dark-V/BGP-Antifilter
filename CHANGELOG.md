@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.0.4 - 2026-11-25
+
+- Add an optional DNS proxy with domain, wildcard and regex rules, exclusion priority and selectable async/BGP/BIRD reply modes.
+- Persist observed IPv4 addresses with TTLs and reconcile them with static source updates without retaining expired DNS routes in static snapshots.
+- Add DNS proxy settings and live status, and show domain rules alongside route results in the existing IP/domain checker; import older backups with the proxy disabled.
+- Add HTTP, HTTPS and SOCKS5 proxy settings with optional authentication for source downloads, release checks and external IP lookups, including when custom DNS resolvers are configured.
+- Align setting fields and hints at the top of each card, avoiding stretched spacing next to taller fields.
+- Display long dashboard countdowns as hours, minutes and seconds; keep the update interval in minutes in settings.
+
 ## 1.0.3 - 2026-11-24
 
 - Resolve domains through dnspython with 16–128 workers (default 16), globally deduplicating domains before DNS resolution and retaining source attribution and exclusion priority.

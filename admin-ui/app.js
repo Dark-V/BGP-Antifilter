@@ -38,6 +38,7 @@ import { bindToolsEvents, loadToolTab, refreshToolLanguage } from "./modules/too
 import { bindPreviewEvents, preparePreview } from "./modules/preview.js";
 import { bindBackupEvents, loadHistory } from "./modules/backups.js";
 import { bindUpdatesEvents, loadUpdateStatus, renderUpdateStatus, updateState } from "./modules/updates.js";
+import { loadDnsProxyStatus } from "./modules/dns-proxy.js";
 
 const STATUS_POLL_INTERVAL_MS = 2000;
 
@@ -237,6 +238,7 @@ async function loadStatus() {
   if (!$("lists").classList.contains("hidden")) {
     renderListTiles();
   }
+  if (!$("settings").classList.contains("hidden")) await loadDnsProxyStatus();
 }
 
 bindListsEvents();

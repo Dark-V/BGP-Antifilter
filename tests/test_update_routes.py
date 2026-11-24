@@ -276,7 +276,7 @@ class CustomDnsFetchTests(unittest.TestCase):
                 finally:
                     connection.close()
 
-    @mock.patch.dict(os.environ, {"DNS_RESOLVE_TIMEOUT": "3"})
+    @mock.patch.dict(os.environ, {"DNS_RESOLVE_TIMEOUT": "3", "HTTP_PROXY_TYPE": "none"})
     def test_fetch_url_uses_custom_dns_for_http_sources(self):
         response = mock.Mock()
         response.status = 200

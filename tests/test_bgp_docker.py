@@ -12,6 +12,7 @@ import subprocess
 import tempfile
 import time
 from string import Template
+from bgp_antifilter.bgp_feed import bird_route_source
 
 def run(*args, check=True):
     result = subprocess.run(args, capture_output=True, text=True, timeout=10)
@@ -24,7 +25,8 @@ with tempfile.TemporaryDirectory() as directory:
     routes.write_text('route 192.0.2.0/24 blackhole;\n')
     template = Path('/etc/bird/bird.conf.template').read_text()
     config = Template(template).substitute(ROUTER_ID='10.0.0.1', MY_AS='64500', PEER_AS='64501',
-                                            PEER_IP='127.0.0.2', BIRD_IP='127.0.0.1', BGP_COMMUNITY='65432,500', BGP_PROTOCOL='peer')
+                                            PEER_IP='127.0.0.2', BIRD_IP='127.0.0.1', BGP_COMMUNITY='65432,500', BGP_PROTOCOL='peer',
+                                            ROUTE_SOURCE=bird_route_source(), DNS_EXPORT_GUARD='')
     config = config.replace('/etc/bird/generated/routes.conf', str(routes))
     config = config.replace('local as MY_AS;', 'local port 1179 as MY_AS;')
     config = config.replace('neighbor PEER_IP as PEER_AS;', 'neighbor PEER_IP port 2179 as PEER_AS;')

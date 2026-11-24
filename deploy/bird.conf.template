@@ -10,12 +10,10 @@ define BIRD_IP = ${BIRD_IP};
 protocol device {
 }
 
-protocol static static_antifilter {
-    ipv4;
-    include "/etc/bird/generated/routes.conf";
-}
+${ROUTE_SOURCE}
 
 filter export_to_peer {
+    ${DNS_EXPORT_GUARD}
     bgp_community.add((${BGP_COMMUNITY}));
     bgp_next_hop = BIRD_IP;
     accept;

@@ -1,6 +1,11 @@
 #!/bin/sh
 set -eu
 
+if [ "$(id -u)" -eq 0 ]; then
+  exec setpriv --reuid=10001 --regid=10001 --clear-groups \
+    --inh-caps=-all --ambient-caps=-all --bounding-set=-all --no-new-privs /healthcheck.sh
+fi
+
 ROUTES="${ROUTES_FILE:-/etc/bird/generated/routes.conf}"
 STATUS_FILE="${STATUS_FILE:-/etc/bird/generated/status.json}"
 NETWORK_STATUS_FILE="${NETWORK_STATUS_FILE:-/etc/bird/generated/network-status.json}"
@@ -9,12 +14,15 @@ HEALTHCHECK_REQUIRE_BGP="${HEALTHCHECK_REQUIRE_BGP:-1}"
 HEALTHCHECK_FAIL_ON_DEGRADED="${HEALTHCHECK_FAIL_ON_DEGRADED:-0}"
 
 if [ "${ADMIN_ENABLED:-0}" = "1" ]; then
-  curl -fsS "http://127.0.0.1:${ADMIN_PORT:-8080}/api/session" >/dev/null
+  curl --disable --noproxy '*' -fsS "http://127.0.0.1:${ADMIN_PORT:-8080}/api/session" >/dev/null
 fi
 
 birdc show status >/dev/null
 
-if [ ! -s "$ROUTES" ]; then
+DNS_PROXY_ENABLED="$(python3 -m bgp_antifilter.container_runtime dns-health)"
+export DNS_PROXY_ENABLED
+
+if [ ! -s "$ROUTES" ] && [ "${DNS_PROXY_ENABLED:-0}" != "1" ]; then
   echo "routes file is empty" >&2
   exit 1
 fi

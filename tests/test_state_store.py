@@ -28,6 +28,29 @@ def exit_with_lock(path, ready):
 
 
 class StateStoreTests(unittest.TestCase):
+    @unittest.skipUnless(os.name != "nt" and hasattr(os, "geteuid") and os.geteuid() == 0,
+                         "requires root to exercise writes for another uid")
+    def test_root_writer_preserves_private_state_owner_and_parent_owner_for_new_state(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            os.chown(directory, 10001, 10001)
+            path = directory / "runtime.json"
+            write_state(path, {"before": True})
+            self.assertEqual((path.stat().st_uid, path.stat().st_gid), (10001, 10001))
+            lock = path.with_name("runtime.json.lock")
+            self.assertEqual((lock.stat().st_uid, lock.stat().st_gid), (10001, 10001))
+            path.chmod(0o600)
+            patch_state(path, after=True)
+            self.assertEqual((path.stat().st_uid, path.stat().st_gid, path.stat().st_mode & 0o777),
+                             (10001, 10001, 0o600))
+            self.assertEqual(read_state(path), {"before": True, "after": True})
+            try:
+                os.seteuid(10001)
+                patch_state(path, app_write=True)
+                self.assertTrue(read_state(path)["app_write"])
+            finally:
+                os.seteuid(0)
+
     def test_process_writers_do_not_lose_updates_or_publish_partial_json(self):
         context = multiprocessing.get_context("spawn")
         with tempfile.TemporaryDirectory() as tmp:

@@ -1,11 +1,13 @@
 """Command execution and reload lifecycle independent of HTTP handlers."""
 
+import ipaddress
 import json
 import subprocess
 import threading
 import time
 
 from .. import runtime_state
+from ..domain_rules import normalize_domain_name
 from ..state_store import read_state, write_state
 from .storage import append_text
 
@@ -27,9 +29,10 @@ def parse_command_status(stdout):
 
 
 class ActionsService:
-    def __init__(self, config, settings):
+    def __init__(self, config, settings, dns_proxy=None):
         self.config = config
         self.settings = settings
+        self.dns_proxy = dns_proxy
         self.reload_lock = threading.Lock()
         self.reload_thread = None
 
@@ -172,13 +175,33 @@ class ActionsService:
         return result
 
     def check_target(self, target, diagnostics):
+        target = str(target or "").strip()
+        try:
+            address = ipaddress.ip_address(target)
+        except ValueError:
+            domain = normalize_domain_name(target)
+            if domain is None:
+                raise ValueError("target must be an IPv4 address or domain")
+        else:
+            if address.version != 4:
+                raise ValueError("Only IPv4 addresses are supported by this project")
+            domain = None
+        environment = self.settings.command_environment()
+        rule = self.dns_proxy.check_domain(domain, environment=environment) if domain and self.dns_proxy else None
         addresses, error = diagnostics.resolve_ipv4_targets(target)
         if error:
+            if rule is not None:
+                return {"ok": False, "target": target, "addresses": [], "result": None, "results": [],
+                        "domain_rule": rule, "lookup_error": error}
             raise ValueError(error)
         results = []
         ok = True
+        live = environment.get("DNS_PROXY_ENABLED", "0") == "1"
         for address in addresses:
-            result = self.run_command(["/check-ip.py", address, "--json", "--routes", str(self.config.last_good_routes_file)], timeout=30)
+            command = ["/check-ip.py", address, "--json", "--routes", str(self.config.last_good_routes_file)]
+            if live:
+                command.append("--live")
+            result = self.run_command(command, timeout=30)
             parsed = None
             if result["stdout"]:
                 try:
@@ -192,4 +215,5 @@ class ActionsService:
             "ok": ok, "target": target, "addresses": addresses,
             "result": results[0]["result"] if len(results) == 1 else None,
             "results": results,
+            **({"domain_rule": rule} if rule is not None else {}),
         }

@@ -1,4 +1,5 @@
 import os
+import json
 import subprocess
 import tempfile
 import unittest
@@ -76,6 +77,79 @@ class UpdaterServerTests(unittest.TestCase):
 
             with mock.patch.object(updater_server, "ENV_FILE", env_file):
                 self.assertEqual(updater_server.configured_version_setting(), "")
+
+    def test_private_env_reads_only_pin_from_verified_own_container(self):
+        with mock.patch.object(Path, "read_text", side_effect=PermissionError("private .env")), \
+             mock.patch.object(updater_server, "deployment_context", return_value={"container": "a" * 64}), \
+             mock.patch.object(updater_server, "run_docker", return_value=json.dumps(
+                 {"workspace_exists": True, "compose_exists": True, "version": "1.0.4"})) as docker:
+            self.assertEqual(updater_server.configured_version_setting(), "1.0.4")
+        docker.assert_called_once_with("exec", "--user", "0:0", "a" * 64,
+                                       "python3", "-m", "bgp_antifilter.updater_server", "--read-update-metadata")
+
+    def test_private_env_probe_requires_verified_container_and_semver_output(self):
+        with mock.patch.object(Path, "read_text", side_effect=PermissionError("private .env")), \
+             mock.patch.object(updater_server, "deployment_context", side_effect=RuntimeError("unknown current container")), \
+             mock.patch.object(updater_server, "run_docker") as docker:
+            with self.assertRaisesRegex(RuntimeError, "metadata probe failed.*unknown current container"):
+                updater_server.configured_version_setting()
+            docker.assert_not_called()
+        with mock.patch.object(Path, "read_text", side_effect=PermissionError("private .env")), \
+             mock.patch.object(updater_server, "deployment_context", return_value={"container": "a" * 64}), \
+             mock.patch.object(updater_server, "run_docker", return_value=json.dumps(
+                 {"workspace_exists": True, "compose_exists": True, "version": "1.0.4\nUNEXPECTED=value"})):
+            with self.assertRaisesRegex(RuntimeError, "MAJOR.MINOR.PATCH"):
+                updater_server.configured_version_setting()
+
+    def test_version_pin_helper_does_not_emit_other_env_values(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / ".env"
+            path.write_text("ADMIN_PASSWORD=not-public\nBGP_ANTIFILTER_VERSION=v1.0.4\n", encoding="utf-8")
+            import sys
+            result = subprocess.run(
+                [sys.executable, "-m", "bgp_antifilter.updater_server", "--read-update-metadata"],
+                env={**os.environ, "ENV_FILE": str(path), "WORKSPACE_DIR": tmp, "COMPOSE_FILE": str(path.parent / "absent.yaml")},
+                capture_output=True, text=True, timeout=10,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(json.loads(result.stdout), {"workspace_exists": True, "compose_exists": False, "version": "1.0.4"})
+            self.assertEqual(result.stderr, "")
+
+    def test_health_status_reports_private_env_probe_failure(self):
+        with mock.patch.object(Path, "exists", return_value=True), \
+             mock.patch.dict(os.environ, {"PORTAINER_MANAGED": "0"}), \
+             mock.patch.object(updater_server, "update_metadata",
+                               side_effect=RuntimeError("cannot read update metadata from workspace: metadata probe failed")):
+            ok, error = updater_server.health_status()
+        self.assertFalse(ok)
+        self.assertIn("metadata probe failed", error)
+        self.assertNotIn("local dev", error)
+
+    def test_private_workspace_uses_metadata_without_changing_permissions(self):
+        metadata = {"workspace_exists": True, "compose_exists": True, "version": "1.0.4"}
+        with mock.patch.object(updater_server, "local_update_metadata", side_effect=PermissionError("private workspace")), \
+             mock.patch.object(updater_server, "deployment_context", return_value={"container": "a" * 64}), \
+             mock.patch.object(updater_server, "run_docker", return_value=json.dumps(metadata)), \
+             mock.patch.object(updater_server.os, "chmod") as chmod:
+            self.assertEqual(updater_server.update_metadata(), metadata)
+            chmod.assert_not_called()
+        with mock.patch.object(updater_server, "local_update_metadata", side_effect=PermissionError("private workspace")), \
+             mock.patch.object(updater_server, "deployment_context", return_value={"container": "a" * 64}), \
+             mock.patch.object(updater_server, "run_docker", side_effect=FileNotFoundError("docker unavailable")):
+            with self.assertRaisesRegex(RuntimeError, "metadata probe failed.*docker unavailable"):
+                updater_server.update_metadata()
+
+    @unittest.skipUnless(os.name != "nt" and hasattr(os, "geteuid") and os.geteuid() == 0,
+                         "requires root to exercise writes for another uid")
+    def test_root_updater_preserves_private_env_owner_and_mode(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / ".env"
+            path.write_text("BGP_ANTIFILTER_VERSION=1.0.3\n", encoding="utf-8")
+            os.chown(path, 10001, 10001)
+            path.chmod(0o600)
+            updater_server.update_env_version(path, "1.0.4")
+            self.assertEqual((path.stat().st_uid, path.stat().st_gid, path.stat().st_mode & 0o777),
+                             (10001, 10001, 0o600))
 
     def test_compose_project_name_reads_top_level_name(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -371,6 +445,7 @@ class UpdaterServerTests(unittest.TestCase):
             self.assertEqual(payload["current_version"], "0.2.8")
             self.assertEqual(payload["target_version"], "0.3.3")
             self.assertEqual(docker.call_args.args[:3], ("run", "-d", "--rm"))
+            self.assertEqual(docker.call_args.args[docker.call_args.args.index("--user") + 1], "0:0")
             self.assertIn("sha256:old", docker.call_args.args)
 
 

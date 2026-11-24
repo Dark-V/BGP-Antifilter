@@ -39,7 +39,19 @@ def read_state(path):
 def state_lock(path, timeout=10):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.with_name(path.name + ".lock").open("a+b") as lock:
+    lock_path = path.with_name(path.name + ".lock")
+    if os.name != "nt" and os.geteuid() == 0:
+        try:
+            descriptor = os.open(lock_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+        except FileExistsError:
+            pass
+        else:
+            try:
+                owner = path.parent.stat()
+                os.fchown(descriptor, owner.st_uid, owner.st_gid)
+            finally:
+                os.close(descriptor)
+    with lock_path.open("a+b") as lock:
         if os.name == "nt":
             # Windows byte-range locks need a byte to lock.
             if lock.seek(0, os.SEEK_END) == 0:
@@ -81,9 +93,17 @@ def _publish(path, value):
             temp_path = Path(file.name)
             file.write(json.dumps(value, indent=2, ensure_ascii=False) + "\n")
         if path.exists():
-            os.chmod(temp_path, path.stat().st_mode & 0o777)
+            previous = path.stat()
+            owner = previous
+            mode = previous.st_mode & 0o777
         else:
-            os.chmod(temp_path, 0o644)
+            owner = path.parent.stat()
+            mode = 0o644
+        # A short-lived root updater shares state with the unprivileged app.
+        # Preserve access before publishing, including owner-only state files.
+        if os.name != "nt" and os.geteuid() == 0:
+            os.chown(temp_path, owner.st_uid, owner.st_gid)
+        os.chmod(temp_path, mode)
         deadline = time.monotonic() + 1
         while True:
             try:

@@ -282,7 +282,7 @@ class SourceCollectionTests(unittest.TestCase):
         connection = mock.MagicMock()
         connection.getresponse.return_value.status = 200
         connection.getresponse.return_value.read.return_value = b"192.0.2.0/24\n"
-        with mock.patch.dict(os.environ, {"DNS_RESOLVE_TIMEOUT": "0.5", "FETCH_TIMEOUT": "30"}):
+        with mock.patch.dict(os.environ, {"DNS_RESOLVE_TIMEOUT": "0.5", "FETCH_TIMEOUT": "30", "HTTP_PROXY_TYPE": "none"}):
             with mock.patch.object(dns_resolver, "resolve_ipv4_addresses", return_value=["203.0.113.5"]) as resolve:
                 with mock.patch.object(fetch.http.client, "HTTPConnection", return_value=connection) as http:
                     text = fetch.fetch_url("http://sources.test/routes", dns_nameservers=["1.1.1.1"])
