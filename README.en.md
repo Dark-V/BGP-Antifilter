@@ -17,6 +17,7 @@ Manage lists and route updates in the web panel.
 ## Features
 
 - Collect IPv4 routes from URL lists, ASNs, countries, domains, and Google ranges excluding Google Cloud.
+- Download sources and resolve unique domains in parallel through `dnspython`, with 16 DNS workers by default and configurable worker counts and query limits.
 - Publish routes over BGP with a community; MikroTik and FRRouting setup examples and MikroTik Address List export.
 - Russian and English web panel for list editing, settings, and manual or scheduled route updates.
 - Preview changes before applying them, cache sources, and retain the last working routes after generation or application failures.

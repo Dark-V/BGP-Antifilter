@@ -12,6 +12,7 @@ from urllib.parse import urljoin, urlsplit
 
 from .. import dns_resolver, generate_routes
 from ..logging import progress
+from ..update_config import env_float
 
 DEFAULT_DNS_HTTP_REDIRECTS = 5
 
@@ -50,6 +51,7 @@ def read_cache(cache_file, now, max_age):
 def fetch_via_custom_dns(url, *, timeout, nameservers):
     current_url = url
     headers = {"User-Agent": "BGP-Antifilter/1.0"}
+    dns_timeout = env_float("DNS_RESOLVE_TIMEOUT", dns_resolver.DEFAULT_TIMEOUT)
 
     for _ in range(DEFAULT_DNS_HTTP_REDIRECTS + 1):
         parts = urlsplit(current_url)
@@ -63,7 +65,7 @@ def fetch_via_custom_dns(url, *, timeout, nameservers):
         if parts.query:
             path = f"{path}?{parts.query}"
 
-        addresses = dns_resolver.resolve_ipv4_addresses(parts.hostname, nameservers=nameservers, timeout=timeout)
+        addresses = dns_resolver.resolve_ipv4_addresses(parts.hostname, nameservers=nameservers, timeout=dns_timeout)
         if not addresses:
             raise RuntimeError(f"no IPv4 addresses returned for {parts.hostname}")
         address = addresses[0]

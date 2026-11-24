@@ -88,6 +88,8 @@ After editing `.env`, run `docker compose up -d`; a plain `restart`
 does not reload Docker environment values.
 
 Other options are easier to change under **Settings** in the web panel:
+they are grouped into updates and cache, source downloads, DNS, route policy,
+and BIRD/BGP.
 
 | Setting | Default | Purpose |
 | --- | --- | --- |
@@ -96,11 +98,24 @@ Other options are easier to change under **Settings** in the web panel:
 | `REQUIRE_ALL_URL_SOURCES` | `0` | Set to `1` to require every URL source or its fresh cache |
 | `DNS_RESOLVERS` | System DNS | Custom IPv4 DNS servers, separated by spaces or commas |
 | `DNS_RESOLVE_TIMEOUT` | `3` | DNS timeout in seconds |
+| `DNS_WORKERS` | `16` | Parallel DNS tasks, from 16 to 128 |
+| `DNS_QPS` | `50` | Shared queries-per-second limit for domain resolution and downloads through custom DNS, from 1 to 1000 |
+| `FETCH_WORKERS` | `8` | Concurrent external source downloads, from 1 to 32 |
 | `FETCH_TIMEOUT` | `30` | Source download timeout in seconds |
 | `FETCH_ATTEMPTS` | `5` | Source download attempts |
 | `FETCH_RETRY_DELAY` | `5` | Delay between attempts in seconds |
 | `MIN_PREFIX_LENGTH` | `8` | Guard against overly broad routes |
 | `ALLOW_BROAD_ROUTES` | `0` | Keep the guard enabled |
+
+Domains from all downloaded lists, inclusions and exclusions are normalized
+and deduplicated before resolution through `dnspython`. Each distinct domain
+is resolved once per update while retaining its source membership and the
+priority of exclusions. All DNS workers share the `DNS_QPS` limit; retries
+and UDP-to-TCP fallback also consume it. Increasing `DNS_WORKERS` does not
+raise the configured QPS.
+The same limit applies when resolving external source hosts through custom
+`DNS_RESOLVERS`. System name resolution for ordinary HTTP downloads and
+proxies is outside this limit.
 
 Save settings and click **Apply now**.
 BGP options marked “restart” require a container restart;
