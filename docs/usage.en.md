@@ -117,6 +117,11 @@ The same limit applies when resolving external source hosts through custom
 `DNS_RESOLVERS`. System name resolution for ordinary HTTP downloads and
 proxies is outside this limit.
 
+`dnspython` queries DNS servers directly. An empty `DNS_RESOLVERS` uses the
+servers from the system configuration, but `/etc/hosts` and Docker
+`extra_hosts` entries are not used when resolving route domains. Configure
+local names on a reachable DNS server or put their IPv4 addresses in the list.
+
 Save settings and click **Apply now**.
 BGP options marked “restart” require a container restart;
 for the README installation, use `docker compose restart`.
@@ -163,7 +168,7 @@ Use a version tag or `latest`, the latest stable release, for a normal installat
 
 ### Correcting release numbering: 6.0.x → 1.0.1
 
-Versions 6.0.0–6.0.2 were misnumbered builds. Their work is consolidated in 1.0.1; old tags and images remain available for rollback. Old updaters consider 1.0.1 an older version. For the first transition, follow the manual update steps above: back up your data, set `BGP_ANTIFILTER_VERSION=1.0.1` in `.env`, then run `docker compose pull` and `docker compose up -d`. For Portainer, change the stack image tag. A one-time backport of version checking also enables the panel button. Version 1.0.1 includes the corrected comparison; subsequent 1.x releases update normally.
+Versions 6.0.0–6.0.2 were misnumbered builds. Their work is consolidated in 1.0.1; old tags and images remain available for rollback. Old updaters consider 1.x an older version. For the first transition, follow the manual update steps above: back up your data, set `BGP_ANTIFILTER_VERSION=1.0.3` in `.env`, then run `docker compose pull` and `docker compose up -d`. For Portainer, change the stack image tag. A one-time backport of version checking also enables the panel button. Version 1.0.1 includes the corrected comparison; subsequent 1.x releases update normally.
 
 ### Web updates for repository deployments
 

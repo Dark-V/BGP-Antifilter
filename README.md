@@ -60,7 +60,7 @@ nano .env
 Вставьте настройки и замените адреса и пароль на свои:
 
 ```dotenv
-BGP_ANTIFILTER_VERSION=1.0.2
+BGP_ANTIFILTER_VERSION=1.0.3
 BGP_ANTIFILTER_IMAGE=ghcr.io/leonidoz/bgp-antifilter:${BGP_ANTIFILTER_VERSION}
 PEER_IP=192.168.55.1
 BIRD_IP=192.168.55.5

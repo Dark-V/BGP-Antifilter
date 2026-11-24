@@ -10,7 +10,7 @@ import urllib.error
 import urllib.request
 from urllib.parse import urljoin, urlsplit
 
-from .. import dns_resolver, generate_routes
+from .. import __version__, dns_resolver, generate_routes
 from ..logging import progress
 from ..update_config import env_float
 
@@ -50,7 +50,7 @@ def read_cache(cache_file, now, max_age):
 
 def fetch_via_custom_dns(url, *, timeout, nameservers):
     current_url = url
-    headers = {"User-Agent": "BGP-Antifilter/1.0"}
+    headers = {"User-Agent": f"BGP-Antifilter/{__version__}"}
     dns_timeout = env_float("DNS_RESOLVE_TIMEOUT", dns_resolver.DEFAULT_TIMEOUT)
 
     for _ in range(DEFAULT_DNS_HTTP_REDIRECTS + 1):
@@ -113,7 +113,7 @@ def fetch_url(url, timeout=None, attempts=None, delay=None, progress_callback=No
     attempts = int(os.environ.get("FETCH_ATTEMPTS", "5")) if attempts is None else attempts
     delay = float(os.environ.get("FETCH_RETRY_DELAY", "5")) if delay is None else delay
     last_error = None
-    request = urllib.request.Request(url, headers={"User-Agent": "BGP-Antifilter/1.0"})
+    request = urllib.request.Request(url, headers={"User-Agent": f"BGP-Antifilter/{__version__}"})
 
     for attempt in range(attempts):
         if progress_callback is not None:
