@@ -10,4 +10,7 @@ if [ "${ADMIN_ENABLED:-0}" != "1" ]; then
   exec tail -f /dev/null
 fi
 
+if [ "$ADMIN_PORT" -ge 1024 ]; then
+  exec setpriv --inh-caps=-all --ambient-caps=-all python3 /admin-server.py
+fi
 exec python3 /admin-server.py

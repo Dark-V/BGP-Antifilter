@@ -8,6 +8,8 @@ import shlex
 import time
 
 from .. import dns_resolver
+from ..http_proxy import HTTP_PROXY_SETTINGS, base_environment, configured_proxy, validate_credential
+from ..dns_settings import DNS_SETTINGS, validate_configuration, active_environment
 from ..bgp_config import ALIASES, canonical_settings, peer_environment, peer_base_environment
 from .storage import json_load, write_text_atomic
 from ..state_store import state_lock
@@ -34,6 +36,11 @@ SETTINGS_SECTIONS = [
         ],
     },
     {
+        "id": "http-proxy",
+        "title": "HTTP-прокси",
+        "items": HTTP_PROXY_SETTINGS,
+    },
+    {
         "id": "dns",
         "title": "DNS",
         "items": [
@@ -42,6 +49,11 @@ SETTINGS_SECTIONS = [
             {"key": "DNS_WORKERS", "type": "int", "default": "16", "min": 16, "max": 128, "legacy_backup_default": True},
             {"key": "DNS_QPS", "type": "int", "default": "50", "min": 1, "max": 1000, "unit": "qps", "legacy_backup_default": True},
         ],
+    },
+    {
+        "id": "dns-proxy",
+        "title": "DNS-прокси",
+        "items": DNS_SETTINGS,
     },
     {
         "id": "security",
@@ -76,6 +88,8 @@ def validate_setting(key, value):
     spec = SETTINGS_BY_KEY.get(ALIASES.get(key, key))
     if not spec:
         raise ValueError(f"unknown setting: {key}")
+    if spec["type"] in {"credential", "password"}:
+        return validate_credential(key, value)
     raw = str(value).strip()
     if raw == "" and spec.get("allow_empty"):
         return ""
@@ -120,6 +134,29 @@ def validate_setting(key, value):
         if not values:
             raise ValueError(f"{key} must contain at least one IPv4 address")
         return ",".join(values)
+    if setting_type == "enum":
+        if raw not in spec["options"]:
+            raise ValueError(f"{key} must be one of: {', '.join(spec['options'])}")
+        return raw
+    if setting_type == "ip":
+        try:
+            return str(ipaddress.ip_address(raw))
+        except ValueError as exc:
+            raise ValueError(f"{key} must be a valid IP address") from exc
+    if setting_type == "cidr_list":
+        try:
+            values = [str(ipaddress.ip_network(value, strict=False)) for value in raw.replace(',', ' ').split()]
+        except ValueError as exc:
+            raise ValueError(f"{key} must contain IP networks separated by spaces or commas") from exc
+        if not values:
+            raise ValueError(f"{key} must contain at least one network")
+        return " ".join(dict.fromkeys(values))
+    if setting_type == "domain":
+        from ..domain_rules import normalize_domain_name
+        domain = normalize_domain_name(raw)
+        if domain is None:
+            raise ValueError(f"{key} must be a valid domain name")
+        return domain
     if setting_type == "ipv4":
         try:
             return str(ipaddress.IPv4Address(raw))
@@ -162,7 +199,7 @@ class SettingsService:
     def effective_settings(self):
         overrides = self.settings_overrides()
         result = {}
-        environment = peer_base_environment(os.environ)
+        environment = base_environment(peer_base_environment(os.environ))
         for key, spec in SETTINGS_BY_KEY.items():
             base = environment.get(key, spec["default"])
             result[key] = overrides.get(key, str(base))
@@ -170,12 +207,13 @@ class SettingsService:
 
     def base_setting_value(self, key):
         spec = SETTINGS_BY_KEY[key]
-        return validate_setting(key, peer_base_environment(os.environ).get(key, spec["default"]))
+        return validate_setting(key, base_environment(peer_base_environment(os.environ)).get(key, spec["default"]))
 
     def command_environment(self):
         env = os.environ.copy()
         env.update(self.effective_settings())
-        return peer_environment(env)
+        env["GENERATED_DIR"] = str(self.config.generated_dir)
+        return peer_environment(active_environment(env))
 
     def save_settings(self, values):
         with state_lock(self.config.config_dir / ".configuration"):
@@ -191,6 +229,9 @@ class SettingsService:
 
     def _save_settings(self, values):
         validated = {key: validate_setting(key, value) for key, value in values.items() if key in SETTINGS_BY_KEY or key in ALIASES}
+        effective = {**{key: self.base_setting_value(key) for key in SETTINGS_BY_KEY}, **validated}
+        validate_configuration(effective)
+        configured_proxy(effective)
         normalized = {}
         for key, setting_value in canonical_settings(validated, reject_conflicts=True).items():
             if setting_value != self.base_setting_value(key):
@@ -199,9 +240,9 @@ class SettingsService:
             "updated_at": int(time.time()),
             "values": normalized,
         }
-        write_text_atomic(self.config.settings_file, json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
+        write_text_atomic(self.config.settings_file, json.dumps(payload, ensure_ascii=False, indent=2) + "\n", mode=0o600)
         env_lines = [f"{key}={shlex.quote(value)}" for key, value in sorted(normalized.items())]
-        write_text_atomic(self.config.settings_env_file, "\n".join(env_lines) + ("\n" if env_lines else ""))
+        write_text_atomic(self.config.settings_env_file, "\n".join(env_lines) + ("\n" if env_lines else ""), mode=0o600)
         return normalized
 
     def settings_payload(self):
@@ -218,15 +259,16 @@ class SettingsService:
                 value = validate_setting(key, effective[key])
                 section_items.append({
                     **item,
-                    "value": value,
-                    "env_value": base_value,
+                    "value": "" if item.get("secret") else value,
+                    "env_value": "" if item.get("secret") else base_value,
+                    **({"has_value": bool(value)} if item.get("secret") else {}),
                     "overridden": value != base_value,
                 })
             sections.append({**section, "items": section_items})
         return {
             "sections": sections,
-            "values": effective,
-            "overrides": overrides,
+            "values": {key: value for key, value in effective.items() if not SETTINGS_BY_KEY[key].get("secret")},
+            "overrides": {key: value for key, value in overrides.items() if not SETTINGS_BY_KEY[key].get("secret")},
             "settings_file": str(self.config.settings_file),
             "settings_env_file": str(self.config.settings_env_file),
         }

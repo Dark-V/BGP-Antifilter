@@ -5,6 +5,8 @@ import os
 import secrets
 import time
 
+from ..update_config import env_bool
+
 
 def cookie_header(name, value, max_age=None):
     parts = [f"{name}={value}", "Path=/", "HttpOnly", "SameSite=Strict"]
@@ -30,6 +32,7 @@ def public_compare(left, right):
 
 class AuthService:
     def __init__(self):
+        self.password_required = not env_bool("NO_ADMIN_PASSWORD")
         self.sessions = {}
         self.login_attempts = {}
 
@@ -59,7 +62,7 @@ class AuthService:
 
     def login(self, client, password):
         expected = os.environ.get("ADMIN_PASSWORD", "")
-        if expected and public_compare(password, expected):
+        if not self.password_required or (expected and public_compare(password, expected)):
             return self.new_session()
         self.record_login_failure(client)
         return None

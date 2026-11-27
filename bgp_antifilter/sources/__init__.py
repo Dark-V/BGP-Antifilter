@@ -83,6 +83,8 @@ class SourceCollection:
     exclude_text: list[str] = field(default_factory=list)
     fetched: dict = field(default_factory=dict)
     dns_results: dict = field(default_factory=dict)
+    dns_policy: dict | None = None
+    dns_rule_sets: dict = field(default_factory=lambda: {"include_domains": set(), "exclude_domains": set()})
 
     def fetch_source(self, kind, name, url, cache_file, now, max_age,
                      progress_callback=None, dns_nameservers=None):
@@ -234,8 +236,10 @@ def prepare_domains(ctx, domain_list_sources, exclude_domains, include_domains, 
     ctx.preparation_progress("Domain resolution complete", 1, 1, 30, 30)
 
 
-def collect_sources(cache_dir, cache_max_age, include_google):
+def collect_sources(cache_dir, cache_max_age, include_google, dns_policy=None):
     now = int(time.time())
+    if dns_policy is not None:
+        dns_policy.update(include_domains=[], exclude_domains=[])
     list_files = list_paths()
     require_all_url_sources = env_bool("REQUIRE_ALL_URL_SOURCES", default=False)
     dns_nameservers = dns_resolver.parse_nameservers(os.environ.get("DNS_RESOLVERS", ""))
@@ -259,6 +263,7 @@ def collect_sources(cache_dir, cache_max_age, include_google):
         cache_dir=cache_dir, cache_max_age=cache_max_age, now=now,
         require_all_url_sources=require_all_url_sources,
         dns_nameservers=dns_nameservers, dns_timeout=dns_timeout, total_items=total_items,
+        dns_policy=dns_policy,
     )
     ctx.preparation_progress("Collecting route sources", 0, 1, 10, 0)
     progress(

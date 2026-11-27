@@ -18,6 +18,14 @@ function renderCheckIpResult(result) {
   const status = result.matched ? t("matched") : t("notMatched");
   const okClass = result.matched ? "ok" : "fail";
   const routes = (result.routes || []).map(route => `<span class="route-pill">${escapeHtml(route)}</span>`).join("");
+  const origin = result.live && result.dns_origin;
+  const dynamicSource = origin ? `
+    <div class="kv">
+      <span>${t("dynamicDnsRoute")}</span>
+      <strong>${escapeHtml(origin.domain)}</strong>
+      <span>${t("dnsRouteRule")}: <code>${escapeHtml(origin.rule)}</code></span>
+      <span>${t("dnsRouteAdded")}: ${escapeHtml(origin.added_at == null ? t("unknownTime") : formatDateTime(origin.added_at * 1000))}</span>
+    </div>` : "";
   const sources = (result.sources || []).map(source => `
     <div class="kv">
       <span>${escapeHtml(t({url: "sourceUrl", asn: "sourceAsn", country: "countries", google: "sourceGoogle", "domain-list-url": "sourceDomainListUrl", "include-domain": "sourceIncludeDomain", "exclude-domain": "sourceExcludeDomain"}[source.kind] || source.kind))} · ${escapeHtml(sourceStatus(source.status))}</span>
@@ -32,30 +40,45 @@ function renderCheckIpResult(result) {
         <span class="status-pill ${okClass}">${status}</span>
         <span class="result-title">${escapeHtml(result.ip)}</span>
       </div>
-      <h3>${t("generatedRoutes")}</h3>
+      <h3>${t(result.live ? "birdRoutes" : "generatedRoutes")}</h3>
       <div class="route-list">${routes || "—"}</div>
       <h3>${t("sources")}</h3>
-      <div class="kv-grid">${sources || `<div class="kv"><strong>—</strong></div>`}</div>
-      <p class="muted">${result.confirmed ? `${t("confirmedSnapshot")}: ${formatDateTime((result.snapshot_applied_at_unix || 0) * 1000)}` : t("provenanceUnavailable")}</p>
+      <div class="kv-grid">${(dynamicSource + sources) || `<div class="kv"><strong>—</strong></div>`}</div>
+      <p class="muted">${result.live ? t("liveRoutesHint") : result.confirmed ? `${t("confirmedSnapshot")}: ${formatDateTime((result.snapshot_applied_at_unix || 0) * 1000)}` : t("provenanceUnavailable")}</p>
       ${(result.sources || []).some(source => source.domains?.length) ? `<h3>${t("domains")}</h3><div class="route-list">${result.sources.flatMap(source => source.domains || []).map(domain => `<span class="route-pill">${escapeHtml(domain)}</span>`).join("")}</div>` : ""}
       ${(result.exclusions || []).length ? `<h3>${t("exclusions")}</h3>${result.exclusions.map(source => `<p>${escapeHtml(source.name)}: ${source.matches.map(escapeHtml).join(", ")}</p>`).join("")}` : ""}
       <details><summary>${t("ipDetails")}</summary>${renderDataTree(result)}</details>
     </div>`;
 }
 
+function renderDomainRuleResult(rule) {
+  if (!rule) return "";
+  const scope = t(rule.scope === "active" ? "dnsRulesActive" : "dnsRulesSaved");
+  if (rule.error) return `<p class="domain-rule-result error-inline"><strong>${scope}: ${t("dnsRuleCheckFailed")}</strong><br>${escapeHtml(rule.error)}</p>`;
+  const decision = t({include: "dnsRuleIncluded", exclude: "dnsRuleExcluded", none: "dnsRuleUnmatched"}[rule.action] || "dnsRuleCheckFailed");
+  const matches = [
+    rule.include_rule ? `${t("dnsRuleIncludeMatch")}: <code>${escapeHtml(rule.include_rule)}</code>` : "",
+    rule.exclude_rule ? `${t("dnsRuleExcludeMatch")}: <code>${escapeHtml(rule.exclude_rule)}</code>` : "",
+  ].filter(Boolean);
+  return `<p class="domain-rule-result"><strong>${scope}: ${decision}</strong>${matches.length ? `<br>${matches.join("<br>")}` : ""}</p>`;
+}
+
 function renderCheckTargetResult(response) {
   const results = response.results || [];
-  if (response.result && !results.length) return renderCheckIpResult(response.result);
+  if (response.result && !results.length && !response.domain_rule && !response.lookup_error) return renderCheckIpResult(response.result);
   const cards = results.map(item => renderCheckIpResult(item.result)).join("");
   const matched = results.filter(item => item.result?.matched).length;
+  const lookupError = response.lookup_error;
   return `
     <div class="result-card">
       <div class="result-head">
-        <span class="status-pill ${matched ? "ok" : "fail"}">${matched}/${results.length} ${t("matched").toLowerCase()}</span>
-        <span class="result-title">${escapeHtml(response.target || "")}</span>
-        <span class="chip">${t("checkedAddresses")}: ${(response.addresses || []).length}</span>
+        <span class="status-pill ${lookupError ? "warn" : matched ? "ok" : "fail"}">${lookupError ? t("dnsLookupFailed") : `${matched}/${results.length} ${t("matched").toLowerCase()}`}</span>
+        <span class="result-title">${escapeHtml(response.target || response.domain_rule?.domain || "")}</span>
+        ${lookupError ? "" : `<span class="chip">${t("checkedAddresses")}: ${(response.addresses || []).length}</span>`}
       </div>
-      <div class="ip-result-list">${cards || "—"}</div>
+      ${renderDomainRuleResult(response.domain_rule)}
+      ${lookupError ? `<p class="error-inline">${escapeHtml(lookupError)}</p>` : ""}
+      ${cards || response.result ? `<div class="ip-result-list">${cards || renderCheckIpResult(response.result)}</div>` : ""}
       <details><summary>${t("lookupDetails")}</summary>${renderDataTree(response)}</details>
     </div>`;
 }
@@ -324,4 +347,4 @@ function bindToolsEvents() {
   $("load-logs-btn").addEventListener("click", () => loadToolTab("logs"));
 }
 
-export { bindToolsEvents, loadToolTab, ipv4Range, matchingRoutes, groupLogLines, logSeverity, refreshToolLanguage };
+export { bindToolsEvents, loadToolTab, ipv4Range, matchingRoutes, groupLogLines, logSeverity, refreshToolLanguage, renderCheckIpResult, renderCheckTargetResult };

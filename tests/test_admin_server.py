@@ -1,5 +1,8 @@
 import tempfile
 import unittest
+import json
+import io
+import contextlib
 import errno
 import socket
 from pathlib import Path
@@ -13,6 +16,9 @@ from bgp_antifilter import __version__, dns_resolver
 from bgp_antifilter.admin import actions, diagnostics, lists, settings, status, storage, updates
 from bgp_antifilter.admin.server import AdminHandler
 from tests.admin_support import admin_application
+from bgp_antifilter import check_ip
+from bgp_antifilter.dns_settings import DNS_SETTINGS
+from bgp_antifilter.state_store import write_state
 
 
 class AdminServerHelperTests(unittest.TestCase):
@@ -143,6 +149,41 @@ class AdminServerHelperTests(unittest.TestCase):
         self.assertIsNone(result["returncode"])
         self.assertEqual(result["stdout"], "")
         self.assertIn("missing command", result["stderr"])
+
+    def test_ip_check_uses_active_dns_mode_until_restart(self):
+        active = {item["key"]: item["default"] for item in DNS_SETTINGS}
+        active.update(DNS_PROXY_ENABLED="1", DNS_PROXY_UPSTREAM="192.0.2.53")
+        path = self.app.config.generated_dir / "dns-settings.active.json"
+        write_state(path, active)
+        command_result = {"ok": True, "stdout": '{"ip":"1.1.1.1","matched":true,"routes":["1.1.1.1/32"],"sources":[],"live":true,"decision":"included"}', "stderr": ""}
+        with mock.patch.object(self.app.actions, "run_command", return_value=command_result.copy()) as command:
+            result = self.app.actions.check_target("1.1.1.1", self.app.diagnostics)
+        self.assertIn("--live", command.call_args.args[0])
+        self.assertTrue(result["result"]["matched"])
+        self.assertEqual(result["result"]["decision"], "included")
+
+        # A saved enable is only desired configuration until the next start.
+        active["DNS_PROXY_ENABLED"] = "0"
+        write_state(path, active)
+        self.app.settings.save_settings({"DNS_PROXY_ENABLED": "1", "DNS_PROXY_UPSTREAM": "192.0.2.53"})
+        with mock.patch.object(self.app.actions, "run_command", return_value=command_result.copy()) as command:
+            self.app.actions.check_target("1.1.1.1", self.app.diagnostics)
+        self.assertNotIn("--live", command.call_args.args[0])
+
+    def test_live_ip_result_preserves_ui_fields_for_a_dynamic_address(self):
+        output = io.StringIO()
+        with mock.patch.object(check_ip.bird_cli, "query", return_value="1.1.1.1/32 blackhole [dns_live 12:00] * (100)\n"), \
+             mock.patch.object(check_ip, "find_dns_origin", return_value={"domain": "cdn.example.test", "rule": "example.test", "added_at": 123}), \
+             contextlib.redirect_stdout(output):
+            code = check_ip.main(["1.1.1.1", "--live", "--json", "--routes", str(self.app.config.last_good_routes_file)])
+        result = json.loads(output.getvalue())
+        self.assertEqual(code, 0)
+        self.assertEqual(result["decision"], "included")
+        self.assertTrue(result["live"])
+        self.assertTrue(result["matched"])
+        self.assertEqual(result["routes"], ["1.1.1.1/32"])
+        self.assertEqual(result["exclusions"], [])
+        self.assertEqual(result["dns_origin"]["domain"], "cdn.example.test")
 
     def test_resolve_ipv4_targets_accepts_ipv4_address(self):
         addresses, error = self.app.diagnostics.resolve_ipv4_targets("192.0.2.10")

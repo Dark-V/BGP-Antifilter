@@ -6,6 +6,7 @@ import urllib.error
 import urllib.request
 
 from .. import __version__, updater_server
+from ..http_proxy import HTTP_PROXY_DEFAULTS, open_url
 
 
 REPOSITORY_URL = "https://github.com/LeonidOz/BGP-Antifilter"
@@ -21,7 +22,7 @@ def parse_semver(value):
     return tuple(map(int, updater_server.validate_version(value).split(".")))
 
 
-def github_latest_release(timeout=5):
+def github_latest_release(timeout=5, settings=None):
     request = urllib.request.Request(
         LATEST_RELEASE_API_URL,
         headers={
@@ -29,7 +30,7 @@ def github_latest_release(timeout=5):
             "Accept": "application/vnd.github+json",
         },
     )
-    with urllib.request.urlopen(request, timeout=timeout) as response:
+    with open_url(request, timeout=timeout, settings=settings) as response:
         payload = json.loads(response.read().decode("utf-8"))
     if not isinstance(payload, dict):
         raise ValueError("latest release payload must be an object")
@@ -53,14 +54,17 @@ def updater_health():
 
 
 class UpdatesService:
-    def __init__(self):
+    def __init__(self, settings=None):
+        self.settings = settings
         self.cache = {"checked_at": 0.0, "payload": None}
 
     def update_status_payload(self, force=False):
         now = time.time()
         cached = self.cache.get("payload")
         checked_at = float(self.cache.get("checked_at") or 0.0)
-        if not force and cached is not None and now - checked_at < UPDATE_CHECK_TTL_SECONDS:
+        settings = self.settings.effective_settings() if self.settings else None
+        proxy_key = tuple((settings or {}).get(key, default) for key, default in HTTP_PROXY_DEFAULTS.items())
+        if not force and cached is not None and self.cache.get("proxy_key") == proxy_key and now - checked_at < UPDATE_CHECK_TTL_SECONDS:
             return dict(cached)
 
         current_version = __version__
@@ -79,7 +83,7 @@ class UpdatesService:
             "checked_at_unix": int(now),
         }
         try:
-            latest = github_latest_release()
+            latest = github_latest_release(settings=settings)
             update_available = updater_server.is_newer_version(latest["version"], current_version)
             payload.update({
                 "ok": True,
@@ -96,6 +100,7 @@ class UpdatesService:
 
         self.cache["checked_at"] = now
         self.cache["payload"] = payload
+        self.cache["proxy_key"] = proxy_key
         return dict(payload)
 
     def status_payload(self, force=False):

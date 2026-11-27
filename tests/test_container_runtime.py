@@ -6,7 +6,9 @@ from pathlib import Path
 import shutil
 import subprocess
 import tempfile
+import threading
 import unittest
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from unittest import mock
 
 from bgp_antifilter import container_runtime
@@ -24,10 +26,12 @@ VALID_ENV = {
 
 
 class ContainerRuntimeTests(unittest.TestCase):
-    def test_env_validation_accepts_disabled_admin_and_enabled_admin_with_password(self):
+    def test_env_validation_accepts_disabled_admin_and_configured_login_modes(self):
         with mock.patch.dict(os.environ, VALID_ENV, clear=True):
             self.assertEqual(container_runtime.main(["validate-env"]), 0)
             with mock.patch.dict(os.environ, {"ADMIN_ENABLED": "1", "ADMIN_PASSWORD": "test"}):
+                self.assertEqual(container_runtime.main(["validate-env"]), 0)
+            with mock.patch.dict(os.environ, {"ADMIN_ENABLED": "1", "NO_ADMIN_PASSWORD": "true"}):
                 self.assertEqual(container_runtime.main(["validate-env"]), 0)
 
     def test_env_validation_retains_error_messages_and_exit_code(self):
@@ -61,6 +65,86 @@ class ContainerRuntimeTests(unittest.TestCase):
             with mock.patch.dict(os.environ, VALID_ENV, clear=True):
                 self.assertEqual(container_runtime.main(["render-bird", str(template), str(target)]), 0)
             self.assertEqual(target.read_text(encoding="utf-8"), "router id 192.168.55.5; # $UNKNOWN\n")
+
+    def test_dns_mode_uses_local_feed_and_keeps_marker_out_of_export(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "bird.conf"
+            with mock.patch.dict(os.environ, {**VALID_ENV, "DNS_PROXY_ENABLED": "1", "DNS_BGP_PORT": "1179",
+                                             "GENERATED_DIR": tmp}, clear=True):
+                container_runtime.render_bird_config(ROOT / "deploy/bird.conf.template", target)
+            text = target.read_text()
+            self.assertIn("protocol bgp dns_live", text)
+            self.assertIn("local 127.0.0.1 port 1179", text)
+            self.assertIn('net = 198.18.0.1/32 then reject', text)
+            self.assertNotIn("protocol static static_antifilter", text)
+            with mock.patch.dict(os.environ, {**VALID_ENV, "GENERATED_DIR": tmp}, clear=True):
+                container_runtime.render_bird_config(ROOT / "deploy/bird.conf.template", target)
+            self.assertIn("protocol static static_antifilter", target.read_text())
+            self.assertNotIn("protocol bgp dns_live", target.read_text())
+
+    def test_dns_only_health_allows_an_empty_static_checkpoint(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "status.json"
+            path.write_text('{"routes":{"final":0}}')
+            with mock.patch.dict(os.environ, {"DNS_PROXY_ENABLED": "1"}):
+                self.assertEqual(container_runtime.check_health("status", path), 0)
+
+    def test_dns_health_surfaces_local_503_reason_without_traceback(self):
+        reply = {"status": 503, "body": b'{"ready":false,"error":"DNS TCP probe for health.example.test returned SERVFAIL"}'}
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(reply["status"])
+                self.send_header("Content-Length", str(len(reply["body"])))
+                self.end_headers()
+                self.wfile.write(reply["body"])
+
+            def log_message(self, *_args):
+                pass
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True)
+        thread.start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(thread.join, 2)
+        self.addCleanup(server.shutdown)
+        values = {"DNS_PROXY_ENABLED": "1", "DNS_PROXY_BIND": "127.0.0.1", "DNS_PROXY_HEALTH_PORT": str(server.server_address[1])}
+        for body, expected in ((reply["body"], "HTTP 503: DNS TCP probe for health.example.test returned SERVFAIL"),
+                               (b"<html>service unavailable</html>", "HTTP 503"),
+                               (b'{"error":' + b'"' + b"x" * 5000 + b'"}', "HTTP 503")):
+            with self.subTest(expected=expected):
+                reply["body"] = body
+                stdout, stderr = io.StringIO(), io.StringIO()
+                with mock.patch("bgp_antifilter.dns_settings.load_active_environment", return_value=values), \
+                     contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                    self.assertEqual(container_runtime.main(["dns-health"]), 1)
+                self.assertEqual(stdout.getvalue(), "")
+                self.assertEqual(stderr.getvalue(), f"DNS readiness failed: http://127.0.0.1:{server.server_address[1]}/ready: {expected}\n")
+                self.assertNotIn("Traceback", stderr.getvalue())
+        reply.update(status=200, body=b'{"ready":true}')
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with mock.patch("bgp_antifilter.dns_settings.load_active_environment", return_value=values), \
+             contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            self.assertEqual(container_runtime.main(["dns-health"]), 0)
+        self.assertEqual((stdout.getvalue(), stderr.getvalue()), ("1\n", ""))
+
+    def test_dns_health_reports_refused_connection_and_disabled_mode_never_connects(self):
+        server = ThreadingHTTPServer(("127.0.0.1", 0), BaseHTTPRequestHandler)
+        port = server.server_address[1]
+        server.server_close()
+        values = {"DNS_PROXY_ENABLED": "1", "DNS_PROXY_BIND": "127.0.0.1", "DNS_PROXY_HEALTH_PORT": str(port)}
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with mock.patch("bgp_antifilter.dns_settings.load_active_environment", return_value=values), \
+             contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            self.assertEqual(container_runtime.main(["dns-health"]), 1)
+        self.assertEqual(stdout.getvalue(), "")
+        self.assertIn(f"DNS readiness failed: http://127.0.0.1:{port}/ready:", stderr.getvalue())
+        self.assertNotIn("Traceback", stderr.getvalue())
+        values["DNS_PROXY_ENABLED"] = "0"
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with mock.patch("bgp_antifilter.dns_settings.load_active_environment", return_value=values), \
+             contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            self.assertEqual(container_runtime.main(["dns-health"]), 0)
+        self.assertEqual((stdout.getvalue(), stderr.getvalue()), ("0\n", ""))
 
     def test_health_checks_keep_failure_codes_and_default_network_behavior(self):
         cases = (

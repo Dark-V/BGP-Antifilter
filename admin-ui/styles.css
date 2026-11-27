@@ -1015,6 +1015,8 @@ details pre { margin-top: 12px; max-height: 360px; overflow: auto; }
 .source-detail-list {
   max-height: 520px;
 }
+.source-warning-summary { display: grid; gap: 8px; margin: 12px 0; }
+.source-warning-summary p { margin: 6px 0 0; overflow-wrap: anywhere; }
 .timeline-main {
   min-width: 0;
 }
@@ -1228,6 +1230,7 @@ details pre { margin-top: 12px; max-height: 360px; overflow: auto; }
 }
 .settings-grid {
   display: grid;
+  align-items: start;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 10px;
 }
@@ -1239,6 +1242,7 @@ details pre { margin-top: 12px; max-height: 360px; overflow: auto; }
 }
 .setting-card {
   display: grid;
+  align-content: start;
   gap: 10px;
   border: 1px solid rgba(36,55,70,.72);
   border-radius: 8px;
@@ -1255,6 +1259,8 @@ details pre { margin-top: 12px; max-height: 360px; overflow: auto; }
 .setting-head strong {
   line-height: 1.25;
 }
+.setting-optional { font-size: 12px; font-weight: normal; }
+.setting-secret-clear { justify-self: start; padding: 6px 10px; font-size: 12px; }
 .setting-badges {
   display: flex;
   flex-wrap: wrap;
@@ -1275,6 +1281,12 @@ details pre { margin-top: 12px; max-height: 360px; overflow: auto; }
   color: var(--muted);
   font-size: 12px;
 }
+.setting-control select { width: 100%; min-width: 0; }
+.dns-proxy-status { margin-bottom: 16px; }
+.dns-proxy-status-head { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
+.dns-proxy-status .kv strong { overflow-wrap: anywhere; }
+.domain-rule-result code { white-space: pre-wrap; overflow-wrap: anywhere; }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 .toggle {
   width: 48px;
   height: 28px;
@@ -1645,7 +1657,19 @@ details pre { margin-top: 12px; max-height: 360px; overflow: auto; }
 .url-source-tiles,
 .domain-list-url-cards {
   grid-template-columns: repeat(auto-fit, minmax(560px, 1fr));
-  align-items: start;
+  align-items: stretch;
+}
+.url-source-tiles > .list-card,
+.domain-list-url-cards > .list-card { display: flex; }
+.url-source-tiles .list-card-head,
+.domain-list-url-cards .list-card-head { flex: 1; align-items: stretch; }
+.url-source-tiles .named-url-card-copy,
+.domain-list-url-cards .named-url-card-copy { grid-template-rows: auto 1fr auto; }
+.url-source-tiles .list-card-actions,
+.domain-list-url-cards .list-card-actions { align-self: start; }
+@media (min-width: 901px) {
+  .url-source-tiles .url-preview,
+  .domain-list-url-cards .url-preview { min-height: 3em; }
 }
 
 /* Name + URL + action buttons must stay inside the panel at desktop widths. */

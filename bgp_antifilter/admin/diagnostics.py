@@ -9,6 +9,7 @@ import urllib.error
 import urllib.request
 
 from .. import dns_resolver, network_diagnostics
+from ..http_proxy import open_url
 from .storage import text_load
 
 
@@ -48,9 +49,9 @@ def local_ipv4_addresses():
     return network_diagnostics.local_ipv4_addresses()
 
 
-def external_ip_summary(timeout=5):
+def external_ip_summary(timeout=5, settings=None):
     try:
-        with urllib.request.urlopen(IP_API_URL, timeout=timeout) as response:
+        with open_url(IP_API_URL, timeout=timeout, settings=settings) as response:
             payload = json.loads(response.read().decode("utf-8"))
     except (OSError, urllib.error.URLError, json.JSONDecodeError, TimeoutError) as exc:
         return {
@@ -130,7 +131,7 @@ class DiagnosticsService:
             "admin": {
                 "port": os.environ.get("ADMIN_PORT", "8080"),
             },
-            "external": external_ip_summary(),
+            "external": external_ip_summary(settings=settings),
             "fetched_at": int(time.time()),
         }
 

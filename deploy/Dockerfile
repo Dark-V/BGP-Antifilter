@@ -26,7 +26,7 @@ LABEL org.opencontainers.image.title="BGP Antifilter" \
 
 ARG BIRD_VERSION=3.4.0-cznic.1~trixie
 RUN apt-get update \
- && apt-get install -y --no-install-recommends ca-certificates libnghttp2-14 libbrotli1 libzstd1 libpsl5t64 \
+ && apt-get install -y --no-install-recommends ca-certificates libnghttp2-14 libbrotli1 libzstd1 libpsl5t64 passwd util-linux \
  && python -c "import urllib.request; urllib.request.urlretrieve('https://pkg.labs.nic.cz/gpg', '/usr/share/keyrings/cznic-labs-pkg.gpg')" \
  && echo 'deb [signed-by=/usr/share/keyrings/cznic-labs-pkg.gpg] https://pkg.labs.nic.cz/bird3 trixie main' > /etc/apt/sources.list.d/bird3.list \
  && apt-get update \
@@ -40,7 +40,11 @@ COPY deploy/requirements-runtime.txt deploy/requirements-dns.txt /tmp/
 RUN python -m pip install --no-cache-dir --require-hashes -r /tmp/requirements-runtime.txt \
  && rm /tmp/requirements-runtime.txt /tmp/requirements-dns.txt
 
-RUN mkdir -p /var/log/supervisor /run/bgp-antifilter
+RUN groupadd --gid 10001 bgp-antifilter \
+ && useradd --uid 10001 --gid 10001 --no-create-home --no-log-init --home-dir /run/bgp-antifilter --shell /usr/sbin/nologin bgp-antifilter \
+ && chmod 0755 /etc/bird \
+ && mkdir -p /var/log/supervisor /run/bgp-antifilter
+ENV DOCKER_CONFIG=/run/bgp-antifilter/docker
 
 # Ship the CLI and its matching Compose plugin for web updates.
 COPY --from=docker-client /usr/local/bin/docker /usr/local/bin/docker
@@ -51,6 +55,7 @@ COPY deploy/entrypoint.sh /entrypoint.sh
 COPY deploy/init-config.sh /init-config.sh
 COPY deploy/lib.sh /lib.sh
 COPY deploy/run-admin.sh /run-admin.sh
+COPY deploy/run-dns-proxy.sh /run-dns-proxy.sh
 COPY deploy/run-bird.sh /run-bird.sh
 COPY deploy/run-scheduler.sh /run-scheduler.sh
 COPY VERSION /VERSION
@@ -65,7 +70,7 @@ COPY deploy/healthcheck.sh /healthcheck.sh
 COPY deploy/reload-routes.sh /reload-routes.sh
 COPY deploy/supervisord.conf /etc/supervisor/conf.d/bgp-antifilter.conf
 COPY deploy/bird.conf.template /etc/bird/bird.conf.template
-RUN chmod +x /container-start.sh /entrypoint.sh /init-config.sh /lib.sh /run-admin.sh /run-bird.sh /run-scheduler.sh /generate-routes.py /update-routes.py /check-ip.py /admin-server.py /healthcheck.sh /reload-routes.sh
+RUN chmod +x /container-start.sh /entrypoint.sh /init-config.sh /lib.sh /run-admin.sh /run-dns-proxy.sh /run-bird.sh /run-scheduler.sh /generate-routes.py /update-routes.py /check-ip.py /admin-server.py /healthcheck.sh /reload-routes.sh
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
   CMD /healthcheck.sh

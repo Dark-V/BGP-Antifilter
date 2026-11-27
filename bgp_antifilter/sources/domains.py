@@ -6,6 +6,7 @@ import socket
 
 from .. import dns_resolver
 from ..logging import progress
+from ..domain_rules import normalize_rule, is_pattern
 from .fetch import cache_path, read_cache
 
 DOMAIN_LABEL_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$")
@@ -29,7 +30,7 @@ def normalize_domain_name(value):
     return domain
 
 
-def parse_domain_list(text):
+def parse_domain_list(text, allow_patterns=False):
     domains = []
     seen = set()
     invalid = 0
@@ -37,7 +38,10 @@ def parse_domain_list(text):
         line = raw_line.strip()
         if not line or line.startswith("#"):
             continue
-        domain = normalize_domain_name(line)
+        try:
+            domain = normalize_rule(line) if allow_patterns else normalize_domain_name(line)
+        except ValueError:
+            domain = None
         if domain is None:
             invalid += 1
             continue
@@ -114,6 +118,39 @@ def resolve_domain(kind, domain, cache_file, now, max_age, dns_nameservers=None,
         return "", record, False
 
 
+def remember_rules(ctx, key, rules):
+    if ctx.dns_policy is None:
+        return
+    seen = ctx.dns_rule_sets[key]
+    for rule in rules:
+        if rule not in seen:
+            seen.add(rule)
+            ctx.dns_policy[key].append(rule)
+
+
+def collect_rule(ctx, kind, value):
+    try:
+        domain = normalize_rule(value)
+        if is_pattern(domain) and ctx.dns_policy is None:
+            raise ValueError("domain patterns require DNS_PROXY_ENABLED=1")
+    except ValueError as exc:
+        record = {"kind": kind, "name": value, "status": "failed", "error": str(exc), "routes": 0}
+        ctx.source_failed = True
+        ctx.errors.append(record)
+        return "", record, False
+    if ctx.dns_policy is not None:
+        key = "exclude_domains" if kind == "exclude-domain" else "include_domains"
+        remember_rules(ctx, key, (domain,))
+    if is_pattern(domain):
+        return "", {"kind": kind, "name": value, "status": "fresh", "error": None,
+                    "routes": 0, "dns_only": True}, True
+    # Existing cache keys and source labels use the original configured text.
+    # resolve_domain normalizes only the shared DNS-result lookup.
+    return resolve_domain(kind, value, cache_path(ctx.cache_dir, kind, value), ctx.now,
+                          ctx.cache_max_age, dns_nameservers=ctx.dns_nameservers,
+                          dns_timeout=ctx.dns_timeout, dns_results=ctx.dns_results)
+
+
 def collect_domain_list_sources(ctx, domain_list_sources):
     for index, source in enumerate(domain_list_sources, 1):
         url = source["url"]
@@ -154,7 +191,16 @@ def collect_domain_list_sources(ctx, domain_list_sources):
         record["routes"] = 0
 
         if ok:
-            domains, invalid_lines = parse_domain_list(text)
+            rules, invalid_lines = parse_domain_list(text, allow_patterns=True)
+            patterns = [rule for rule in rules if is_pattern(rule)]
+            domains = [rule for rule in rules if not is_pattern(rule)]
+            record["dns_patterns"] = len(patterns)
+            if ctx.dns_policy is not None:
+                remember_rules(ctx, "include_domains", rules)
+            elif patterns:
+                ok = False
+                record["status"] = "failed"
+                record["error"] = "domain patterns require DNS_PROXY_ENABLED=1"
             record["domains"] = len(domains)
             record["invalid_lines"] = invalid_lines
             resolved_routes = []
@@ -196,7 +242,7 @@ def collect_domain_list_sources(ctx, domain_list_sources):
             if record["cached_domains"]:
                 record["download_status"] = record["status"]
                 record["status"] = "cache"
-            if domains:
+            if domains or (patterns and ctx.dns_policy is not None):
                 resolved_cache_file = cache_path(ctx.cache_dir, "domain-list-routes", url)
                 resolved_cache_file.write_text("".join(resolved_routes), encoding="utf-8")
                 record["resolved_cache_file"] = str(resolved_cache_file)
@@ -240,21 +286,12 @@ def collect_exclude_domains(ctx, exclude_domains):
             current_step=0.15,
         )
         progress("resolving exclude domain", index=index, total=len(exclude_domains), domain=domain)
-        text, record, ok = resolve_domain(
-            "exclude-domain",
-            domain,
-            cache_path(ctx.cache_dir, "exclude-domain", domain),
-            ctx.now,
-            ctx.cache_max_age,
-            dns_nameservers=ctx.dns_nameservers,
-            dns_timeout=ctx.dns_timeout,
-            dns_results=ctx.dns_results,
-        )
+        text, record, ok = collect_rule(ctx, "exclude-domain", domain)
         ctx.sources.append(record)
         ctx.source_failed = ctx.source_failed or not ok
-        if ok:
+        if ok and text:
             ctx.exclude_text.append(text)
-        else:
+        elif not ok and record not in ctx.errors:
             ctx.errors.append(record)
         ctx.processed_items += 1
         ctx.update_progress(
@@ -278,19 +315,10 @@ def collect_include_domains(ctx, include_domains):
             current_step=0.15,
         )
         progress("resolving include domain", index=index, total=len(include_domains), domain=domain)
-        text, record, ok = resolve_domain(
-            "include-domain",
-            domain,
-            cache_path(ctx.cache_dir, "include-domain", domain),
-            ctx.now,
-            ctx.cache_max_age,
-            dns_nameservers=ctx.dns_nameservers,
-            dns_timeout=ctx.dns_timeout,
-            dns_results=ctx.dns_results,
-        )
-        if ok:
+        text, record, ok = collect_rule(ctx, "include-domain", domain)
+        if ok and text:
             ctx.include_text.append(text)
-        else:
+        elif not ok and record not in ctx.errors:
             record["status"] = "skipped"
             record["required"] = False
             progress("skipping optional include domain", domain=domain, status="skipped")

@@ -20,18 +20,27 @@ def text_load(path):
         return ""
 
 
-def write_text_atomic(path, text):
+def write_text_atomic(path, text, *, mode=None):
+    def write(target):
+        if mode is None:
+            target.write_text(text, encoding="utf-8", newline="\n")
+            return
+        descriptor = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, mode)
+        with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as file:
+            if os.name != "nt":
+                os.fchmod(file.fileno(), mode)
+            file.write(text)
+
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(text, encoding="utf-8", newline="\n")
+    write(tmp)
     try:
         tmp.replace(path)
     except OSError as exc:
         if exc.errno not in (errno.EBUSY, errno.EACCES, errno.EPERM):
             raise
         tmp.unlink(missing_ok=True)
-        with path.open("w", encoding="utf-8", newline="\n") as file:
-            file.write(text)
+        write(path)
 
 
 def append_text(path, text):

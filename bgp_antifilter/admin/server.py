@@ -2,6 +2,7 @@
 
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import hashlib
 import json
 import mimetypes
 import os
@@ -10,6 +11,7 @@ from urllib.parse import parse_qs, urlparse
 from .. import __version__, updater_server
 from ..export_address_list import DEFAULT_LIST_NAME
 from ..route_transaction import RouteManager
+from ..update_config import env_bool
 from .application import AdminApplication
 from .auth import cookie_header, get_cookie
 from .lists import ListWriteError, SnapshotUnavailable, UnknownListError
@@ -109,11 +111,7 @@ class AdminHandler(BaseHTTPRequestHandler):
             self.send_response(HTTPStatus.OK)
             self.end_headers()
             return
-        target = self.app.config.static_root / "index.html"
-        self.send_response(HTTPStatus.OK)
-        self.send_header("Content-Type", "text/html")
-        self.send_header("Content-Length", str(target.stat().st_size if target.exists() else 0))
-        self.end_headers()
+        self.serve_static(parsed.path, head_only=True)
 
     def do_POST(self):
         parsed = urlparse(self.path)
@@ -129,30 +127,41 @@ class AdminHandler(BaseHTTPRequestHandler):
             return
         self.handle_api_put(parsed.path)
 
-    def serve_static(self, path):
-        root = self.app.config.static_root
+    def serve_static(self, path, head_only=False):
+        root = self.app.config.static_root.resolve()
         if path == "/":
             path = "/index.html"
         target = (root / path.lstrip("/")).resolve()
+        status = HTTPStatus.OK
         try:
-            target.relative_to(root.resolve())
+            target.relative_to(root)
         except ValueError:
-            self.send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
-            return
-        if not target.exists() or not target.is_file():
-            target = root / "index.html"
-        content_type = mimetypes.guess_type(str(target))[0] or "application/octet-stream"
-        data = target.read_bytes()
-        self.send_response(HTTPStatus.OK)
+            status = HTTPStatus.NOT_FOUND
+            content_type = "application/json; charset=utf-8"
+            data = json.dumps({"error": "not found"}).encode("utf-8")
+        else:
+            if not target.exists() or not target.is_file():
+                target = root / "index.html"
+            content_type = mimetypes.guess_type(str(target))[0] or "application/octet-stream"
+            data = target.read_bytes()
+            stylesheet = root / "styles.css"
+            if target == root / "index.html" and stylesheet.is_file():
+                # A content hash also bypasses CSS cached before these headers existed.
+                revision = hashlib.sha256(stylesheet.read_bytes()).hexdigest()[:16]
+                data = data.replace(b'href="/styles.css"', f'href="/styles.css?v={revision}"'.encode("ascii"))
+        self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "no-store")
         self.end_headers()
-        self.wfile.write(data)
+        if not head_only:
+            self.wfile.write(data)
 
     def handle_api_get(self, path, parsed):
         if path == "/api/session":
             self.send_json({
                 "authenticated": self.authenticated(), "version": __version__,
+                "password_required": self.app.auth.password_required,
                 "login_network": self.app.diagnostics.login_network_payload(),
             })
             return
@@ -200,6 +209,8 @@ class AdminHandler(BaseHTTPRequestHandler):
             self.send_text(self.app.status.logs())
         elif path == "/api/settings":
             self.send_json(self.app.settings.settings_payload())
+        elif path == "/api/dns-proxy/status":
+            self.send_json(self.app.dns_proxy.status())
         elif path == "/api/tools/network":
             self.send_json(self.app.diagnostics.network_summary())
         elif path == "/api/update/status":
@@ -237,7 +248,17 @@ class AdminHandler(BaseHTTPRequestHandler):
             return
         if not self.require_auth():
             return
-        if path in {"/api/routes/preview", "/api/routes/apply-preview", "/api/backups/preview", "/api/backups/restore", "/api/backups/list/restore"}:
+        if path == "/api/dns-proxy/test-rule":
+            data = self.read_json_or_error()
+            if data is None:
+                return
+            try:
+                payload = self.app.dns_proxy.test_rule(data)
+            except (ValueError, TimeoutError) as exc:
+                self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+                return
+            self.send_json(payload)
+        elif path in {"/api/routes/preview", "/api/routes/apply-preview", "/api/backups/preview", "/api/backups/restore", "/api/backups/list/restore"}:
             data = self.read_json_or_error()
             if data is None:
                 return
@@ -362,7 +383,7 @@ def main():
         print("admin server is disabled (ADMIN_ENABLED != 1)", flush=True)
         return 0
     port = int(os.environ.get("ADMIN_PORT", "8080"))
-    if not os.environ.get("ADMIN_PASSWORD", ""):
+    if not env_bool("NO_ADMIN_PASSWORD") and not os.environ.get("ADMIN_PASSWORD", ""):
         print("ADMIN_PASSWORD must be set when admin server is enabled", flush=True)
         return 1
     app = AdminApplication()

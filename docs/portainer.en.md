@@ -18,8 +18,9 @@ Add these under **Environment variables**:
 
 | Variable | Example | Purpose |
 | --- | --- | --- |
-| `BGP_ANTIFILTER_IMAGE` | `ghcr.io/leonidoz/bgp-antifilter:1.0.3` | Application image |
-| `ADMIN_PASSWORD` | Your password | Web panel login |
+| `BGP_ANTIFILTER_IMAGE` | `ghcr.io/leonidoz/bgp-antifilter:1.0.4` | Application image |
+| `ADMIN_PASSWORD` | Your password | Web panel login when `NO_ADMIN_PASSWORD=false` |
+| `NO_ADMIN_PASSWORD` | `false` | Set to `true` to open the panel without a password |
 | `PEER_IP` | `192.168.55.1` | BGP peer address |
 | `BIRD_IP` | `192.168.55.5` | Existing Linux server address |
 | `ROUTER_ID` | `192.168.55.5` | Usually the same as `BIRD_IP` |
@@ -34,7 +35,7 @@ The stack already uses host networking; no separate port mapping is needed.
 ## 3. Deploy and connect the router
 
 Click **Deploy the stack** and wait for the first route download.
-Open **http://192.168.55.5:8080** and enter your password.
+Open **http://192.168.55.5:8080**. Enter your password when `NO_ADMIN_PASSWORD=false`.
 Then follow the [general BGP guide](bgp.en.md), with examples for [FRR](frr.en.md) and [MikroTik](mikrotik.en.md).
 Legacy `MT_IP` and `MT_AS` variables remain supported.
 

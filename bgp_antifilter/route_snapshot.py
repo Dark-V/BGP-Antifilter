@@ -4,10 +4,31 @@ import hashlib
 import ipaddress
 import json
 from pathlib import Path
+import time
 
 from .check_ip import parse_networks_from_text
 from .generate_routes import collapse_routes
 from .state_store import read_state
+
+
+def confirmed_snapshot(snapshot, now=None):
+    """Static source checkpoint; live DNS leases remain in their own TTL store."""
+    now = int(time.time()) if now is None else now
+    status = {**snapshot["status"], "success": True, "generation_success": True, "apply_success": True,
+              "degraded": False, "degraded_reason": "", "last_successful_apply_timestamp_seconds": now}
+    return {**snapshot, "applied_at_unix": now, "status": status}
+
+
+def publish_checkpoint(snapshot, publication):
+    from .route_output import write_metrics, write_text
+    from .state_store import write_state
+    last_good = Path(publication["last_good_routes_file"])
+    text = route_text(snapshot["prefixes"])
+    write_text(Path(publication["routes_file"]), text)
+    write_text(last_good, text)
+    write_state(snapshot_path(last_good), snapshot)
+    write_state(Path(publication["status_file"]), snapshot["status"])
+    write_metrics(Path(publication["metrics_file"]), snapshot["status"])
 
 
 def snapshot_path(routes):
@@ -22,7 +43,7 @@ def digest(text):
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-def freeze_sources(sources):
+def freeze_sources(sources, *, min_prefix_length=0):
     records = []
     for source in sources:
         if source.get("status") not in {"fresh", "cache"}:
@@ -34,7 +55,10 @@ def freeze_sources(sources):
             except (ValueError, TypeError):
                 prefixes = []
         else:
-            prefixes = [str(net) for net in collapse_routes(parse_networks_from_text(text, extract=True))]
+            networks = parse_networks_from_text(text, extract=True)
+            if source["kind"] != "exclude-domain":
+                networks = [network for network in networks if network.prefixlen >= min_prefix_length]
+            prefixes = [str(net) for net in collapse_routes(networks)]
         records.append({
             "kind": source["kind"], "name": source.get("name", ""),
             "url": source.get("url"), "status": source["status"],
@@ -44,10 +68,10 @@ def freeze_sources(sources):
     return records
 
 
-def make_snapshot(networks, status, sources):
+def make_snapshot(networks, status, sources, *, min_prefix_length=0):
     prefixes = [str(network) for network in networks]
     return {"schema": 1, "prefixes": prefixes, "routes_sha256": digest(route_text(prefixes)),
-            "status": status, "provenance": freeze_sources(sources)}
+            "status": status, "provenance": freeze_sources(sources, min_prefix_length=min_prefix_length)}
 
 
 def read_confirmed(routes):

@@ -22,7 +22,7 @@ import {
 import { canvasState } from "./modules/login-canvas.js";
 import { operationState } from "./modules/operations.js";
 import { renderAcceptedCommandResult, renderCommandResult, renderErrorView } from "./modules/results.js";
-import { setVersion, showAdmin, showLogin } from "./modules/session.js";
+import { openSession, setVersion, showAdmin, showLogin } from "./modules/session.js";
 import {
   applySettingsFormValues,
   bindSettingsEvents,
@@ -38,6 +38,7 @@ import { bindToolsEvents, loadToolTab, refreshToolLanguage } from "./modules/too
 import { bindPreviewEvents, preparePreview } from "./modules/preview.js";
 import { bindBackupEvents, loadHistory } from "./modules/backups.js";
 import { bindUpdatesEvents, loadUpdateStatus, renderUpdateStatus, updateState } from "./modules/updates.js";
+import { loadDnsProxyStatus } from "./modules/dns-proxy.js";
 
 const STATUS_POLL_INTERVAL_MS = 2000;
 
@@ -213,11 +214,11 @@ async function saveListSourceSetting(key, value) {
 
 async function init() {
   applyLang();
-  const session = await api("/api/session");
+  const session = await openSession();
   canvasState.loginNetworkLabels = session.login_network?.labels || [];
   setVersion(session.version);
   if (session.authenticated) {
-    showAdmin();
+    showAdmin(session.password_required !== false);
     setupLists();
     await Promise.all([loadStatus(), loadList(listState.currentList), loadUpdateStatus(), loadSettings()]);
     statusTimer = setInterval(() => { loadStatus().catch(() => {}); }, STATUS_POLL_INTERVAL_MS);
@@ -237,6 +238,7 @@ async function loadStatus() {
   if (!$("lists").classList.contains("hidden")) {
     renderListTiles();
   }
+  if (!$("settings").classList.contains("hidden")) await loadDnsProxyStatus();
 }
 
 bindListsEvents();

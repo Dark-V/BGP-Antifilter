@@ -5,6 +5,8 @@ import json
 import os
 from pathlib import Path
 import time
+import uuid
+import ipaddress
 
 from .logging import progress
 from .runtime_paths import GENERATED_PATH_SPECS, env_path
@@ -64,11 +66,14 @@ def main(argv=None):
         "collapsed_removed": 0,
         "exclude_rules_applied": 0,
         "invalid": 0,
+        "broad_skipped": 0,
     }
     networks = []
 
+    dns_policy = {} if env_bool("DNS_PROXY_ENABLED", default=False) else None
+    kwargs = {"dns_policy": dns_policy} if dns_policy is not None else {}
     source_failed, sources, errors, base_text, include_text, exclude_text = collect_sources(
-        cache_dir, cache_max_age, include_google
+        cache_dir, cache_max_age, include_google, **kwargs
     )
 
     if args.check_sources:
@@ -101,8 +106,10 @@ def main(argv=None):
                 args.allow_broad_routes,
             )
 
-            if not networks:
-                record = {"kind": "routes", "name": "generated", "status": "failed", "error": "generated route list is empty"}
+            if not networks and (dns_policy is None or routes["broad_skipped"]):
+                error = ("no routes remain after skipping broad IPv4 prefixes"
+                         if routes["broad_skipped"] else "generated route list is empty")
+                record = {"kind": "routes", "name": "generated", "status": "failed", "error": error}
                 errors.append(record)
                 source_failed = True
             elif not args.dry_run:
@@ -118,8 +125,25 @@ def main(argv=None):
     status = build_status(success, started_at, sources, routes, errors, cache_max_age, dry_run=args.dry_run)
     status["generation_success"] = success
     status["apply_success"] = None
+    if success and dns_policy is not None:
+        excluded = set()
+        for block in exclude_text:
+            for line in block.splitlines():
+                try:
+                    network = ipaddress.IPv4Network(line.strip(), strict=False)
+                except ValueError:
+                    continue
+                excluded.add(str(network))
+        dns_policy.update(generation=uuid.uuid4().hex, routes=[str(net) for net in networks],
+                          exclude_routes=sorted(excluded))
+        if not args.dry_run:
+            write_json(Path(str(output) + ".dns.json"), dns_policy)
     if args.snapshot and success:
-        write_json(Path(args.snapshot), make_snapshot(networks, status, sources))
+        snapshot = make_snapshot(networks, status, sources,
+                                 min_prefix_length=0 if args.allow_broad_routes else args.min_prefix_length)
+        if dns_policy is not None:
+            snapshot["dns_policy"] = dns_policy
+        write_json(Path(args.snapshot), snapshot)
 
     if args.dry_run:
         write_runtime_progress("completed", "Dry run complete", active=False, items_done=len(sources), items_total=len(sources))

@@ -85,6 +85,9 @@ jobs:
       - name: Verify BIRD 3 BGP export and reconfiguration
         run: RUN_DOCKER_BGP=1 BGP_TEST_IMAGE=ghcr.io/leonidoz/bgp-antifilter:dev python -m unittest tests.test_bgp_docker -v
 
+      - name: Verify DNS proxy and live BIRD routes
+        run: RUN_DOCKER_DNS_PROXY=1 DNS_PROXY_TEST_IMAGE=ghcr.io/leonidoz/bgp-antifilter:dev python -m unittest tests.test_dns_proxy_docker -v
+
       - name: Verify FRR import policy and VPN next hop
         run: RUN_DOCKER_FRR=1 BGP_TEST_IMAGE=ghcr.io/leonidoz/bgp-antifilter:dev python -m unittest tests.test_frr_docker -v
 

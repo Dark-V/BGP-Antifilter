@@ -6,6 +6,7 @@ set -eu
 
 prepare_user_config
 load_settings_env
+DNS_ACTIVE_ENABLED="$(python3 -m bgp_antifilter.dns_settings activate)"
 validate_env
 setup_runtime_dirs
 prepare_runtime_files
@@ -24,9 +25,20 @@ STARTUP_SNAPSHOT_MTIME_UNIX="$(printf '%s\n' "$startup_snapshot_values" | sed -n
 STARTUP_SNAPSHOT_AGE_SECONDS="$(printf '%s\n' "$startup_snapshot_values" | sed -n '4p')"
 export STARTUP_SNAPSHOT_USED STARTUP_SNAPSHOT_SIZE_BYTES STARTUP_SNAPSHOT_MTIME_UNIX STARTUP_SNAPSHOT_AGE_SECONDS
 
+# A DNS-only policy can legitimately have an empty static checkpoint. Its
+# leased routes are recovered by the worker, with expired records discarded.
+if [ "$DNS_ACTIVE_ENABLED" = "1" ] && [ -f "$GENERATED_DIR/dns-policy.json" ]; then
+  startup_mode="background-refresh"
+fi
+
 if [ "$startup_mode" = "background-refresh" ]; then
   echo "Starting BIRD with existing route snapshot while refreshing routes in background" >>"$CONTAINER_LOG_FILE"
-  cp "$LAST_GOOD_ROUTES" "$ROUTES"
+  if [ -f "$LAST_GOOD_ROUTES" ]; then
+    cp "$LAST_GOOD_ROUTES" "$ROUTES"
+  else
+    : >"$ROUTES"
+  fi
+  rm -f "$GENERATED_DIR/routes.prepared.json"
   GENERATION_ACTIVE=1
   GENERATION_KIND="startup"
   GENERATION_MESSAGE="Starting with previous routes while refreshing in background"
@@ -72,7 +84,7 @@ export GENERATION_ACTIVE GENERATION_KIND GENERATION_MESSAGE GENERATION_STARTED_A
 export LAST_UPDATE_REASON LAST_UPDATE_MESSAGE LAST_UPDATE_SUCCESS LAST_UPDATE_FINISHED_AT_UNIX DEGRADED DEGRADED_REASON
 write_runtime 0
 
-if [ ! -s "$ROUTES" ]; then
+if [ ! -s "$ROUTES" ] && [ "$DNS_ACTIVE_ENABLED" != "1" ]; then
   echo "No routes are available after initial update, refusing to start BIRD with an empty table" >&2
   exit 1
 fi

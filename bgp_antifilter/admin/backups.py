@@ -7,8 +7,11 @@ import time
 import uuid
 
 from ..route_transaction import operation_lock
-from ..state_store import read_state, state_lock, write_state
+from ..state_store import read_state, state_lock
 from .settings import SETTINGS_BY_KEY, validate_setting
+from ..dns_settings import validate_configuration
+from ..http_proxy import configured_proxy
+from ..domain_rules import validate_rule_list
 from ..bgp_config import ALIASES, canonical_settings
 from .storage import text_load, write_text_atomic
 
@@ -40,6 +43,8 @@ class BackupService:
         for name, content in lists.items():
             if not isinstance(content, str) or "\x00" in content or len(content.encode()) > 1_000_000:
                 raise ValueError(f"invalid list content: {name}")
+            if name in {"include-domains", "exclude-domains"}:
+                validate_rule_list(content)
         if not isinstance(settings, dict) or set(settings) - (set(SETTINGS_BY_KEY) | set(ALIASES)):
             raise ValueError("backup must contain all supported settings and no unknown settings")
         normalized = canonical_settings({key: validate_setting(key, value) for key, value in settings.items()}, reject_conflicts=True)
@@ -49,6 +54,8 @@ class BackupService:
                 normalized.setdefault(key, spec["default"])
         if set(normalized) != set(SETTINGS_BY_KEY):
             raise ValueError("backup must contain all supported settings and no unknown settings")
+        validate_configuration(normalized)
+        configured_proxy(normalized)
         return {"schema": 1, "lists": lists, "settings": normalized}
 
     def preview(self, data):
@@ -60,13 +67,17 @@ class BackupService:
                      for name, content in normalized["lists"].items() if current["lists"][name] != content}
             settings = {key: {"before": current["settings"][key], "after": value}
                         for key, value in normalized["settings"].items() if value != current["settings"][key]}
+            for key, change in settings.items():
+                if SETTINGS_BY_KEY[key].get("secret"):
+                    change.update({name: "••••••" if value else "" for name, value in change.items()})
             identifier = uuid.uuid4().hex
             self.directory.mkdir(parents=True, exist_ok=True)
             for path in self.directory.glob("*.json"):
                 if path.stat().st_mtime < time.time() - 86400:
                     path.unlink(missing_ok=True)
-            write_state(self.directory / (identifier + ".json"),
-                        {"created_at_unix": int(time.time()), "backup": normalized, "fingerprint": self.fingerprint()})
+            private_preview = {"created_at_unix": int(time.time()), "backup": normalized, "fingerprint": self.fingerprint()}
+            write_text_atomic(self.directory / (identifier + ".json"),
+                              json.dumps(private_preview, ensure_ascii=False, indent=2) + "\n", mode=0o600)
             return {"id": identifier, "lists": diffs, "settings": settings}
 
     def restore(self, identifier):
@@ -83,7 +94,7 @@ class BackupService:
             saved = {file: file.read_bytes() if file.exists() else None for file in
                      (*self.config.list_files.values(), self.config.settings_file, self.config.settings_env_file)}
             backup_path = self.config.config_dir / "config-backups" / (uuid.uuid4().hex + ".json")
-            write_state(backup_path, self._export())
+            write_text_atomic(backup_path, json.dumps(self._export(), ensure_ascii=False, indent=2) + "\n", mode=0o600)
             try:
                 for name, content in data["lists"].items():
                     self.lists._save(name, content)
@@ -93,7 +104,8 @@ class BackupService:
                     if content is None:
                         file.unlink(missing_ok=True)
                     else:
-                        write_text_atomic(file, content.decode("utf-8"))
+                        private = file in {self.config.settings_file, self.config.settings_env_file}
+                        write_text_atomic(file, content.decode("utf-8"), mode=0o600 if private else None)
                 raise
             path.unlink(missing_ok=True)
             return {"ok": True, "backup": str(backup_path), "requires_restart": True}

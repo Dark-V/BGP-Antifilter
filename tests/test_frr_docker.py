@@ -57,7 +57,8 @@ class FrrDockerTests(unittest.TestCase):
                    os.environ.get("FRR_TEST_IMAGE", FRR_IMAGE), "3600")
             config = Template((ROOT / "deploy/bird.conf.template").read_text()).substitute(
                 ROUTER_ID=origin_ip, MY_AS="64500", PEER_IP=peer_ip, PEER_AS="65455", BIRD_IP=origin_ip,
-                BGP_COMMUNITY="65432,500", BGP_PROTOCOL="peer")
+                BGP_COMMUNITY="65432,500", BGP_PROTOCOL="peer",
+                ROUTE_SOURCE='protocol static static_antifilter {\n    ipv4;\n    include "/etc/bird/generated/routes.conf";\n}', DNS_EXPORT_GUARD="")
             config = config.replace("/etc/bird/generated/routes.conf", "/tmp/frr-routes.conf")
             config = config.replace("    multihop;", "    multihop;\n    connect retry time 1;")
             frr = (ROOT / "docs/examples/frr.conf").read_text().replace("192.168.55.5", origin_ip).replace("192.168.55.1", peer_ip)

@@ -276,7 +276,7 @@ class CustomDnsFetchTests(unittest.TestCase):
                 finally:
                     connection.close()
 
-    @mock.patch.dict(os.environ, {"DNS_RESOLVE_TIMEOUT": "3"})
+    @mock.patch.dict(os.environ, {"DNS_RESOLVE_TIMEOUT": "3", "HTTP_PROXY_TYPE": "none"})
     def test_fetch_url_uses_custom_dns_for_http_sources(self):
         response = mock.Mock()
         response.status = 200
@@ -1042,7 +1042,7 @@ class MainTests(unittest.TestCase):
             self.assertFalse(output.exists())
             self.assertIn('"kind": "exclude-domain"', status.read_text(encoding="utf-8"))
 
-    def test_broad_route_guard_rejects_default_route(self):
+    def test_broad_route_guard_keeps_valid_routes_and_refuses_empty_updates(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             source = root / "source.txt"
@@ -1053,15 +1053,14 @@ class MainTests(unittest.TestCase):
             output = root / "routes.conf"
             status = root / "status.json"
             metrics = root / "metrics.prom"
+            snapshot = root / "snapshot.json"
 
-            source.write_text("0.0.0.0/0\n", encoding="utf-8")
             lists.write_text(f"{source.as_uri()}\n", encoding="utf-8")
             include_asns.write_text("", encoding="utf-8")
             include_domains.write_text("", encoding="utf-8")
             exclude_domains.write_text("", encoding="utf-8")
 
-            old_env = os.environ.copy()
-            os.environ.update(
+            with mock.patch.dict(os.environ,
                 {
                     "LISTS_FILE": str(lists),
                     "INCLUDE_ASNS_FILE": str(include_asns),
@@ -1070,17 +1069,36 @@ class MainTests(unittest.TestCase):
                     "INCLUDE_GOOGLE_RANGES": "0",
                     "CACHE_DIR": str(root / "cache"),
                     "CACHE_MAX_AGE": "604800",
+                    "ALLOW_BROAD_ROUTES": "0",
+                    "MIN_PREFIX_LENGTH": "8",
                 }
-            )
+            ):
+                args = ["--output", str(output), "--status", str(status), "--metrics", str(metrics),
+                        "--snapshot", str(snapshot)]
+                os.environ["DNS_PROXY_ENABLED"] = "1"
+                source.write_text("0.0.0.0/0\n", encoding="utf-8")
+                output.write_text("    route 192.0.2.0/24 blackhole;\n", encoding="utf-8")
+                exit_code, _ = run_main_quiet(args)
+                self.assertEqual(exit_code, 1)
+                self.assertIn("no routes remain after skipping broad IPv4 prefixes", status.read_text(encoding="utf-8"))
+                self.assertIn("192.0.2.0/24", output.read_text(encoding="utf-8"))
+                self.assertFalse(snapshot.exists())
 
-            try:
-                exit_code, _ = run_main_quiet(["--output", str(output), "--status", str(status), "--metrics", str(metrics)])
-            finally:
-                os.environ.clear()
-                os.environ.update(old_env)
+                source.write_text("38.0.0.0/7\n198.51.100.0/24\n", encoding="utf-8")
+                exit_code, log = run_main_quiet(args)
+                self.assertEqual(exit_code, 0)
+                self.assertIn('"level": "warning"', log)
+                data = json.loads(snapshot.read_text(encoding="utf-8"))
+                self.assertEqual(data["prefixes"], ["198.51.100.0/24"])
+                self.assertEqual(data["dns_policy"]["routes"], data["prefixes"])
+                self.assertEqual(data["provenance"][0]["prefixes"], data["prefixes"])
+                self.assertEqual(data["status"]["routes"]["broad_skipped"], 1)
 
-            self.assertEqual(exit_code, 1)
-            self.assertIn("refusing broad IPv4 routes", status.read_text(encoding="utf-8"))
+                exit_code, _ = run_main_quiet([*args, "--allow-broad-routes"])
+                self.assertEqual(exit_code, 0)
+                allowed = json.loads(snapshot.read_text(encoding="utf-8"))
+                self.assertIn("38.0.0.0/7", allowed["prefixes"])
+                self.assertEqual(allowed["status"]["routes"]["broad_skipped"], 0)
 
     def test_dry_run_does_not_write_output_status_or_metrics(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -1,6 +1,7 @@
 import http.client
 import json
 import os
+import re
 from pathlib import Path
 import tempfile
 import threading
@@ -68,6 +69,39 @@ class AdminHttpTests(unittest.TestCase):
         self.assertIn("HttpOnly; SameSite=Strict", headers["Set-Cookie"])
         return headers["Set-Cookie"].split(";", 1)[0]
 
+    def test_passwordless_panel_starts_a_session_without_exposing_actions_to_cookieless_requests(self):
+        with mock.patch.dict(os.environ, {"ADMIN_PASSWORD": "", "NO_ADMIN_PASSWORD": "true"}):
+            self.app.auth = auth.AuthService()
+            code, headers, session = self.request("GET", "/api/session")
+            self.assertEqual(code, 200)
+            self.assertFalse(session["password_required"])
+            self.assertFalse(session["authenticated"])
+            self.assertNotIn("Set-Cookie", headers)
+            self.assertEqual(self.request("PUT", "/api/settings", {"values": {}})[0], 401)
+
+            code, headers, body = self.request("POST", "/api/login", {})
+            self.assertEqual((code, body), (200, {"ok": True}))
+            self.assertIn("HttpOnly; SameSite=Strict", headers["Set-Cookie"])
+            cookie = headers["Set-Cookie"].split(";", 1)[0]
+            self.assertTrue(self.request("GET", "/api/session", cookie=cookie)[2]["authenticated"])
+            self.assertEqual(self.request("GET", "/api/settings", cookie=cookie)[0], 200)
+
+    def test_dns_proxy_endpoints_require_auth_and_preview_does_not_save(self):
+        self.assertEqual(self.request("GET", "/api/dns-proxy/status")[0], 401)
+        self.assertEqual(self.request("POST", "/api/dns-proxy/test-rule", {})[0], 401)
+        cookie = self.login()
+        code, _, status = self.request("GET", "/api/dns-proxy/status", cookie=cookie)
+        self.assertEqual(code, 200)
+        self.assertFalse(status["enabled"])
+        rules = {"domain": "mail.example.org", "include": "*.example.org", "exclude": "mail.example.org"}
+        code, _, result = self.request("POST", "/api/dns-proxy/test-rule", rules, cookie)
+        self.assertEqual(code, 200)
+        self.assertEqual(result["action"], "exclude")
+        self.assertEqual(result["exclude_rule"], "mail.example.org")
+        self.assertEqual(self.app.lists.read("include-domains")["content"], "# previous\n")
+        rules["exclude"] = "regex:("
+        self.assertEqual(self.request("POST", "/api/dns-proxy/test-rule", rules, cookie)[0], 400)
+
     def test_public_status_static_fallback_and_head_keep_http_contract(self):
         code, headers, payload = self.request("GET", "/status.json")
         self.assertEqual(code, 200)
@@ -88,12 +122,53 @@ class AdminHttpTests(unittest.TestCase):
         code, _headers, html = self.request("GET", "/")
         self.assertEqual(code, 200)
         self.assertIn(b'<script type="module" src="/app.js"></script>', html)
+        self.assertRegex(html, rb'href="/styles\.css\?v=[0-9a-f]{16}"')
         for path in ["/app.js", *["/modules/" + file.name for file in (self.app.config.static_root / "modules").glob("*.js")]]:
             with self.subTest(path=path):
                 code, headers, body = self.request("GET", path)
                 self.assertEqual(code, 200)
                 self.assertIn(headers["Content-Type"].split(";", 1)[0], {"text/javascript", "application/javascript"})
                 self.assertNotIn(b"<!doctype html", body.lower())
+
+    def test_static_get_and_head_use_current_asset_metadata_without_caching(self):
+        (self.app.config.static_root / "styles.css").write_text("body { color: red; }", encoding="utf-8")
+        (self.app.config.static_root / "app.js").write_text("export const ready = true;", encoding="utf-8")
+        for path in ["/", "/index.html", "/styles.css?v=previous", "/app.js", "/missing.js", "/../outside"]:
+            with self.subTest(path=path):
+                code, headers, body = self.request("GET", path)
+                head_code, head_headers, head_body = self.request("HEAD", path)
+                self.assertEqual(code, head_code)
+                self.assertEqual(headers["Cache-Control"], "no-store")
+                self.assertEqual(head_body, b"")
+                for name in ["Content-Type", "Content-Length", "Cache-Control"]:
+                    self.assertEqual(head_headers[name], headers[name])
+        self.assertEqual(self.request("HEAD", "/styles.css")[1]["Content-Type"], "text/css")
+        self.assertEqual(self.request("HEAD", "/styles.css")[1]["Content-Length"], "20")
+
+    def test_stylesheet_url_changes_with_css_contents_without_a_version_bump(self):
+        index = self.app.config.static_root / "index.html"
+        index.write_text('<link rel="stylesheet" href="/styles.css"><script type="module" src="/app.js"></script>', encoding="utf-8")
+        stylesheet = self.app.config.static_root / "styles.css"
+        stylesheet.write_text("body { color: red; }", encoding="utf-8")
+
+        def stylesheet_url(path="/"):
+            code, headers, html = self.request("GET", path)
+            self.assertEqual(code, 200)
+            self.assertEqual(int(headers["Content-Length"]), len(html))
+            self.assertIn(b'<script type="module" src="/app.js"></script>', html)
+            return re.search(rb'href="(/styles\.css\?v=[0-9a-f]{16})"', html).group(1).decode("ascii")
+
+        original_url = stylesheet_url()
+        self.assertEqual(stylesheet_url("/index.html"), original_url)
+        self.assertEqual(stylesheet_url("/unknown/page"), original_url)
+        stylesheet.write_text("body { color: tan; }", encoding="utf-8")
+        updated_url = stylesheet_url()
+        self.assertNotEqual(original_url, updated_url)
+        code, headers, body = self.request("GET", updated_url)
+        self.assertEqual(code, 200)
+        self.assertEqual(headers["Cache-Control"], "no-store")
+        self.assertEqual(body, stylesheet.read_bytes())
+        self.assertEqual(stylesheet_url(), updated_url)
 
     def test_login_logout_expiry_and_sessions_are_isolated_between_applications(self):
         cookie = self.login()
@@ -265,7 +340,7 @@ class AdminHttpTests(unittest.TestCase):
         with mock.patch.object(admin_http, "AdminHTTPServer") as server:
             with mock.patch.dict(os.environ, {"ADMIN_ENABLED": "0"}):
                 self.assertEqual(admin_http.main(), 0)
-            with mock.patch.dict(os.environ, {"ADMIN_ENABLED": "1", "ADMIN_PASSWORD": ""}):
+            with mock.patch.dict(os.environ, {"ADMIN_ENABLED": "1", "ADMIN_PASSWORD": "", "NO_ADMIN_PASSWORD": "false"}):
                 self.assertEqual(admin_http.main(), 1)
             server.assert_not_called()
 
@@ -290,7 +365,8 @@ class AdminHttpTests(unittest.TestCase):
             status.assert_called_once_with(force=True)
 
     def test_main_keeps_port_binding_and_update_reconciliation(self):
-        with mock.patch.dict(os.environ, {"ADMIN_ENABLED": "1", "ADMIN_PORT": "18080"}):
+        with mock.patch.dict(os.environ, {"ADMIN_ENABLED": "1", "ADMIN_PORT": "18080",
+                                          "ADMIN_PASSWORD": "", "NO_ADMIN_PASSWORD": "true"}):
             with mock.patch.object(admin_http, "AdminApplication", return_value=self.app):
                 with mock.patch.object(admin_http.updater_server, "reconcile_runtime") as reconcile:
                     with mock.patch.object(admin_http, "AdminHTTPServer") as server:

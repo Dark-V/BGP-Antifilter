@@ -56,7 +56,7 @@ function eventLevel(event) {
   const status = event.status || "";
   const message = event.message || "";
   if (status === "failed" || message.includes("failed")) return "fail";
-  if (status === "cache" || status === "skipped" || status === "disabled" || event.skipped_domains > 0 || message.includes("skipping")) return "warn";
+  if ((status === "cache" && event.error) || status === "skipped" || status === "disabled" || event.skipped_domains > 0 || event.cached_domains > 0 || message.includes("skipping")) return "warn";
   return "ok";
 }
 
@@ -326,8 +326,36 @@ function renderRouteMath(routes = {}) {
         <div class="kv"><span>${t("excludeRules")}</span><strong>${routeValue(routes.exclude_rules_applied)}</strong></div>
         <div class="kv"><span>${t("collapsedRemoved")}</span><strong>${routeValue(collapsedRemoved)}</strong></div>
         <div class="kv ${routes.invalid ? "warn" : "ok"}"><span>${t("invalid")}</span><strong>${routeValue(routes.invalid ?? 0)}</strong></div>
+        ${routes.broad_skipped > 0 ? `<div class="kv warn">
+          <span>${t("skippedBroadPrefixes")}</span><strong>${routeValue(routes.broad_skipped)}</strong>
+          <span>${escapeHtml((routes.broad_examples || []).join(", "))}</span>
+        </div>` : ""}
       </div>
     </div>`;
+}
+
+function sourceIssue(source) {
+  const details = [source.error];
+  if (source.cached_domains > 0) details.push(`${t("cachedDomainsAfterError")}: ${source.cached_domains}`);
+  if (source.skipped_domains > 0) details.push(`${t("unresolvedDomains")}: ${source.skipped_domains}`);
+  let title;
+  if (source.status === "failed") title = t("sourceUnavailable");
+  else if (source.status === "skipped") title = t("sourceSkipped");
+  else if (source.status === "cache" && source.error) title = t("sourceCacheFallback");
+  else if (source.cached_domains > 0 || source.skipped_domains > 0) title = t("sourceDomainProblems");
+  else return null;
+  return {level: source.status === "failed" ? "fail" : "warn", title, detail: details.filter(Boolean).join(" · ")};
+}
+
+function renderSourceWarnings(sources = []) {
+  const issues = sources.map(source => ({source, issue: sourceIssue(source)})).filter(({issue}) => issue);
+  if (!issues.length) return "";
+  return `<div class="source-warning-summary">${issues.map(({source, issue}) => `
+    <div class="kv ${issue.level}">
+      <span>${escapeHtml(issue.title)}</span>
+      <strong>${escapeHtml(source.name || source.url || source.kind || t("sources"))}</strong>
+      ${issue.detail ? `<p>${escapeHtml(issue.detail)}</p>` : ""}
+    </div>`).join("")}</div>`;
 }
 
 function renderSourceDetails(sources = []) {
@@ -347,7 +375,7 @@ function renderSourceDetails(sources = []) {
             <div class="timeline-main">
               <div class="timeline-title">
                 <strong>${escapeHtml(source.name || source.url || source.kind || "source")}</strong>
-                <span class="chip ${escapeHtml(source.status || "")}">${escapeHtml(sourceStatus(source.status))}</span>
+                <span class="chip ${level}">${escapeHtml(sourceStatus(source.status))}</span>
                 ${source.required === false ? `<span class="chip warn">optional</span>` : ""}
               </div>
               <div class="timeline-meta">${escapeHtml(facts)}</div>
@@ -367,5 +395,7 @@ export {
   renderRouteMath,
   renderRows,
   renderSourceDetails,
-  renderStageOutput
+  renderSourceWarnings,
+  renderStageOutput,
+  sourceIssue
 };

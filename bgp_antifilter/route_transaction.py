@@ -42,6 +42,8 @@ def operation_lock(config):
 class RouteManager:
     def __init__(self, config, environment):
         self.config = config
+        from .dns_settings import active_environment
+        environment = active_environment({**environment, "GENERATED_DIR": str(config.generated_dir)})
         from .runtime_paths import GENERATED_PATH_SPECS, LIST_FILE_SPECS
         self.environment = {**environment,
                             **{variable: str(getattr(config, key)) for key, (variable, _) in GENERATED_PATH_SPECS.items() if hasattr(config, key)},
@@ -51,6 +53,19 @@ class RouteManager:
         self.environment.setdefault("CACHE_DIR", str(config.generated_dir / "cache"))
         self.environment.setdefault("NETWORK_STATUS_FILE", str(config.generated_dir / "network-status.json"))
         self.previews = config.generated_dir / "previews"
+
+    @property
+    def dns_enabled(self):
+        return self.environment.get("DNS_PROXY_ENABLED", "0") == "1"
+
+    def install_dns_snapshot(self, snapshot):
+        from .live_routes import install_policy
+        publication = {key: str(getattr(self.config, key)) for key in
+                       ("routes_file", "last_good_routes_file", "status_file", "metrics_file")}
+        with tempfile.TemporaryDirectory(prefix="policy-", dir=self.config.generated_dir) as directory:
+            path = Path(directory) / "policy.json"
+            write_state(path, snapshot["dns_policy"])
+            install_policy(path, self.config.generated_dir, snapshot=snapshot, publication=publication)
 
     def fingerprint(self):
         from .admin.settings import SETTINGS_BY_KEY
@@ -64,7 +79,11 @@ class RouteManager:
 
     def baseline(self):
         try:
-            return digest(self.config.last_good_routes_file.read_text(encoding="utf-8"))
+            text = self.config.last_good_routes_file.read_text(encoding="utf-8")
+            if self.dns_enabled:
+                snapshot = read_confirmed(self.config.last_good_routes_file)
+                text += json.dumps(snapshot.get("dns_policy", {}), sort_keys=True)
+            return digest(text)
         except FileNotFoundError:
             return digest("")
 
@@ -85,7 +104,7 @@ class RouteManager:
         if result.stderr:
             print(result.stderr, end="", file=sys.stderr, flush=True)
         snapshot = read_state(directory / "snapshot.json")
-        if result.returncode or not snapshot.get("prefixes"):
+        if result.returncode or not snapshot or (not snapshot.get("prefixes") and not (self.dns_enabled and snapshot.get("dns_policy"))):
             status = read_state(directory / "status.json")
             errors = [item.get("error", "") for item in status.get("errors", [])]
             raise GenerationFailed("Route update failed: " + ("; ".join(errors) or result.stderr[-2000:] or "empty route snapshot"), status)
@@ -198,19 +217,23 @@ class RouteManager:
                     generated = True
                 patch_state(config.runtime_file, generation_active=True, generation_stage="applying-routes",
                             generation_progress_percent=90, generation_stage_message="Waiting for BIRD to accept routes")
-                write_text(config.routes_file, route_text(snapshot["prefixes"]))
-                configured = True
-                self.configure()
-                self.publish(snapshot)
+                if self.dns_enabled:
+                    self.install_dns_snapshot(snapshot)
+                else:
+                    write_text(config.routes_file, route_text(snapshot["prefixes"]))
+                    configured = True
+                    self.configure()
+                    self.publish(snapshot)
                 if identifier:
                     (self.previews / (identifier + ".json")).unlink(missing_ok=True)
             except Exception as exc:
                 error = exc
-                for path, content in previous_files.items():
-                    if content is None:
-                        path.unlink(missing_ok=True)
-                    else:
-                        write_text(path, content.decode("utf-8"))
+                if not self.dns_enabled:
+                    for path, content in previous_files.items():
+                        if content is None:
+                            path.unlink(missing_ok=True)
+                        else:
+                            write_text(path, content.decode("utf-8"))
                 if configured:
                     try:
                         self.configure()
@@ -242,6 +265,19 @@ class RouteManager:
         with operation_lock(self.config):
             if digest(self.config.routes_file.read_text(encoding="utf-8")) != snapshot["routes_sha256"]:
                 raise RuntimeError("prepared routes changed before BIRD startup")
+            if self.dns_enabled:
+                try:
+                    self.install_dns_snapshot(snapshot)
+                except Exception as exc:
+                    self.failed(exc, generation_success=True, attempt_status=snapshot.get("status"))
+                    raise
+                now = int(time.time())
+                patch_state(self.config.runtime_file, **IDLE_GENERATION, last_update_reason="initial",
+                            last_update_message="BIRD accepted initial routes", last_update_success=True,
+                            last_update_finished_at_unix=now, degraded=False, degraded_reason="",
+                            next_scheduled_update_unix=now + int(self.environment.get("UPDATE_INTERVAL", 1800)))
+                path.unlink()
+                return
             for _ in range(30):
                 result = subprocess.run(["birdc", "show", "status"], capture_output=True, timeout=5, check=False)
                 if result.returncode == 0:

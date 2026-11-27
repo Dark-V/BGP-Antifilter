@@ -81,6 +81,37 @@ test("route reload and polling never expand the operation log", async ({page}) =
   await expect(log).not.toHaveAttribute("open", "");
 });
 
+test("source warnings show the affected source and reason while normal cache and zero counts stay neutral", async ({page}, testInfo) => {
+  const status = await (await page.request.get("/api/status")).json();
+  let sources = Array.from({length: 92}, (_, index) => ({name: `Fresh ${index + 1}`, status: "fresh"}));
+  sources.push({name: "Example mirror", status: "cache", error: "HTTP 503 <upstream>", cache_file: "source.txt"});
+  await page.route("**/api/status", route => route.fulfill({json: {...status, status: {...status.status, sources}}}));
+  await page.locator("#refresh-btn").click();
+  const stage = page.locator('.flow-node[data-stage="sources"]');
+  await expect(stage).toHaveClass(/\bwarn\b/);
+  await stage.click();
+  const warning = page.locator("#stage-details .source-warning-summary");
+  await expect(warning).toBeVisible();
+  await expect(warning.locator(".kv")).toHaveCount(1);
+  await expect(warning).toContainText("Example mirror");
+  await expect(warning).toContainText("HTTP 503 <upstream>");
+  await expect(warning).toContainText("Update failed; using cached data");
+  await expect(page.locator("#stage-details .source-details-collapsed")).not.toHaveAttribute("open", "");
+  const zeroRows = await page.locator("#stage-details .kv-grid .kv").evaluateAll(rows => rows.filter(row => row.querySelector("strong").textContent.trim() === "0").map(row => row.className));
+  expect(zeroRows).toHaveLength(2);
+  for (const className of zeroRows) expect(className).not.toMatch(/warn|fail/);
+  await language(page, "ru");
+  await expect(warning).toContainText("Не удалось обновить; используются данные из кеша");
+  await expect(warning).toContainText("HTTP 503 <upstream>");
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBeTruthy();
+  await page.locator("#stage-details").screenshot({path: testInfo.outputPath("source-warning.png")});
+  sources = [{name: "Example mirror", status: "cache", cache_file: "source.txt"}];
+  await page.locator("#refresh-btn").click();
+  await expect(stage).toHaveClass(/\bok\b/);
+  await expect(warning).toHaveCount(0);
+  await expect(page.locator("#stage-details .kv-grid .kv.warn, #stage-details .kv-grid .kv.fail")).toHaveCount(0);
+});
+
 test("route search and readable settings preserve seconds when saved", async ({page}) => {
   await navigate(page, "routes");
   await page.locator("#routes-search").fill("192.0.2.10");
@@ -99,8 +130,8 @@ test("route search and readable settings preserve seconds when saved", async ({p
   expect((await page.locator('[data-setting-key="DNS_RESOLVERS"]').boundingBox()).height).toBeLessThan(160);
 });
 
-test("Google toggling and settings saves preserve unrelated and hidden overrides", async ({page}) => {
-  await page.request.put("/api/settings", {data: {values: {FETCH_TIMEOUT: "45"}}});
+test("saved settings retain overrides without changed badges and track unsaved edits globally", async ({page}) => {
+  await page.request.put("/api/settings", {data: {values: {FETCH_TIMEOUT: "45", DNS_RESOLVE_TIMEOUT: "4", DNS_PROXY_PORT: "1053"}}});
   await navigate(page, "lists");
   await page.locator('[data-list="google-ranges"]').click();
   await page.locator(".google-ranges-toggle-card").click();
@@ -108,18 +139,41 @@ test("Google toggling and settings saves preserve unrelated and hidden overrides
   await expect.poll(async () => (await (await page.request.get("/api/settings")).json()).values.INCLUDE_GOOGLE_RANGES).toBe("1");
   await navigate(page, "settings");
   await expect(page.locator('[data-setting-key="FETCH_TIMEOUT"]')).toHaveValue("45");
+  await expect(page.locator('[data-setting-key="DNS_RESOLVE_TIMEOUT"]')).toHaveValue("4");
+  await expect(page.locator('[data-setting-key="DNS_PROXY_PORT"]')).toHaveValue("1053");
+  await expect(page.locator("#settings .setting-badges .chip:not(.warn)")).toHaveCount(0);
+  const portCard = page.locator(".setting-card").filter({has: page.locator('[data-setting-key="DNS_PROXY_PORT"]')});
+  await expect(portCard.locator(".setting-badges .chip.warn")).toHaveText("restart");
+  await expect(page.locator("#save-settings-btn")).toBeDisabled();
   await page.locator('[data-setting-key="FETCH_TIMEOUT"]').fill("60");
+  await expect(page.locator("#settings-save-status")).toHaveText("Changed fields: 1");
+  await expect(page.locator("#save-settings-btn")).toBeEnabled();
+  await language(page, "ru");
+  await expect(page.locator("#settings-save-status")).toHaveText("Изменено полей: 1");
+  await expect(portCard.locator(".setting-badges .chip.warn")).toHaveText("перезапуск");
+  await expect(page.locator("#settings .setting-badges .chip:not(.warn)")).toHaveCount(0);
   await page.locator("#save-settings-btn").click();
-  await expect(page.locator("#settings-save-status")).toContainText("Saved");
-  const {values} = await (await page.request.get("/api/settings")).json();
+  await expect(page.locator("#settings-save-status")).toContainText("Сохранено");
+  const {values, sections} = await (await page.request.get("/api/settings")).json();
   expect(values.FETCH_TIMEOUT).toBe("60");
+  expect(values.DNS_RESOLVE_TIMEOUT).toBe("4");
+  expect(values.DNS_PROXY_PORT).toBe("1053");
   expect(values.INCLUDE_GOOGLE_RANGES).toBe("1");
+  for (const key of ["FETCH_TIMEOUT", "DNS_RESOLVE_TIMEOUT", "DNS_PROXY_PORT"]) {
+    expect(sections.flatMap(section => section.items).find(item => item.key === key).overridden).toBeTruthy();
+  }
+  await page.reload();
+  await navigate(page, "settings");
+  await expect(page.locator('[data-setting-key="FETCH_TIMEOUT"]')).toHaveValue("60");
+  await expect(page.locator("#save-settings-btn")).toBeDisabled();
+  await expect(page.locator("#settings .setting-badges .chip:not(.warn)")).toHaveCount(0);
+  await expect(portCard.locator(".setting-badges .chip.warn")).toHaveText("перезапуск");
 });
 
 test("DNS and download settings are grouped, bounded and saved", async ({page}) => {
   await navigate(page, "settings");
   await expect(page.locator(".settings-section h2")).toHaveText([
-    "Updates and cache", "Source downloads", "DNS", "Route policy", "BIRD / BGP"
+    "Updates and cache", "Source downloads", "HTTP/HTTPS Proxy for requests", "DNS", "DNS proxy", "Route policy", "BIRD / BGP"
   ]);
   const dns = page.locator(".settings-section").filter({has: page.getByRole("heading", {name: "DNS", exact: true})});
   const workers = dns.getByLabel("DNS workers", {exact: true});
@@ -140,11 +194,127 @@ test("DNS and download settings are grouped, bounded and saved", async ({page}) 
   expect([values.DNS_WORKERS, values.DNS_QPS, values.FETCH_WORKERS]).toEqual(["64", "25", "4"]);
   await language(page, "ru");
   await expect(page.locator(".settings-section h2")).toHaveText([
-    "Обновление и кеш", "Загрузка источников", "DNS", "Правила маршрутов", "BIRD / BGP"
+    "Обновление и кеш", "Загрузка источников", "HTTP/HTTPS Прокси для запросов маршрутов", "DNS", "DNS-прокси", "Правила маршрутов", "BIRD / BGP"
   ]);
   await expect(page.getByLabel("DNS-воркеры", {exact: true})).toHaveValue("64");
   await expect(page.getByLabel("Лимит DNS-запросов", {exact: true})).toHaveValue("25");
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBeTruthy();
+});
+
+test("daily schedules keep minutes in settings and hours in the dashboard countdown", async ({page}) => {
+  await page.request.put("/api/settings", {data: {values: {UPDATE_INTERVAL: "90"}}});
+  await navigate(page, "settings");
+  const interval = page.locator('[data-setting-key="UPDATE_INTERVAL"]');
+  await expect(interval).toHaveValue("1.5");
+  await expect(interval.locator("..").locator(".unit")).toHaveText("minutes");
+  await interval.fill("1440");
+  await page.locator("#save-settings-btn").click();
+  await expect(page.locator("#settings-save-status")).toContainText("Saved");
+  expect((await (await page.request.get("/api/settings")).json()).values.UPDATE_INTERVAL).toBe("86400");
+  await page.route("**/api/status", async route => {
+    const response = await route.fetch();
+    const data = await response.json();
+    data.runtime = {...data.runtime, generation_active: false, next_scheduled_update_unix: Math.floor(Date.now() / 1000) + 86376};
+    await route.fulfill({response, json: data});
+  });
+  await navigate(page, "dashboard");
+  await page.locator("#refresh-btn").click();
+  await expect(page.locator("#next-update")).toHaveText(/23:59:3[0-6]/);
+  await navigate(page, "settings");
+  await expect(interval).toHaveValue("1440");
+  await expect(interval.locator("..").locator(".unit")).toHaveText("minutes");
+  await language(page, "ru");
+  await expect(interval.locator("..").locator(".unit")).toHaveText("минут");
+});
+
+test("DNS proxy settings preserve reply modes, fractional timeouts and client networks", async ({page}, testInfo) => {
+  await navigate(page, "settings");
+  const stylesheet = page.locator('link[rel="stylesheet"]');
+  await expect(stylesheet).toHaveAttribute("href", /^\/styles\.css\?v=[0-9a-f]{16}$/);
+  const cssResponse = await page.request.get(await stylesheet.getAttribute("href"));
+  expect(cssResponse.ok()).toBeTruthy();
+  expect(cssResponse.headers()["cache-control"]).toBe("no-store");
+  const proxy = page.locator(".settings-section").filter({has: page.getByRole("heading", {name: "DNS proxy", exact: true})});
+  await expect(proxy.getByLabel("Enable DNS proxy", {exact: true})).not.toBeChecked();
+  await expect(proxy.getByLabel("Upstream DNS server", {exact: true})).toHaveValue("");
+  await expect(proxy.getByLabel("When to return DNS replies", {exact: true})).toHaveValue("async");
+  await expect(page.locator("#dns-proxy-status")).toContainText("Disabled");
+  await proxy.getByLabel("Upstream DNS server", {exact: true}).fill("2001:db8::53");
+  await proxy.getByLabel("Allowed clients and networks", {exact: true}).fill("127.0.0.0/8\n::1/128\n192.0.2.0/24");
+  await proxy.getByLabel("When to return DNS replies", {exact: true}).selectOption("bird");
+  await proxy.getByLabel("Route synchronization timeout", {exact: true}).fill("0.125");
+  await proxy.getByLabel("On synchronization failure", {exact: true}).selectOption("forward");
+  await language(page, "ru");
+  await expect(page.getByLabel("Когда возвращать DNS-ответ", {exact: true})).toHaveValue("bird");
+  await page.locator("#save-settings-btn").click();
+  await expect(page.locator("#settings-save-status")).toContainText("Сохранено");
+  const {values} = await (await page.request.get("/api/settings")).json();
+  expect(values.DNS_PROXY_ENABLED).toBe("0");
+  expect(values.DNS_PROXY_UPSTREAM).toBe("2001:db8::53");
+  expect(values.DNS_SYNC_MODE).toBe("bird");
+  expect(values.DNS_SYNC_TIMEOUT).toBe("0.125");
+  expect(values.DNS_SYNC_ON_TIMEOUT).toBe("forward");
+  expect(values.DNS_PROXY_ALLOWED_CLIENTS).toContain("192.0.2.0/24");
+  const portCard = page.locator('.setting-card').filter({has: page.locator('[data-setting-key="DNS_PROXY_PORT"]')});
+  const portGeometry = await portCard.evaluate(card => {
+    const head = card.querySelector(".setting-head").getBoundingClientRect();
+    const control = card.querySelector(".setting-control").getBoundingClientRect();
+    return {controlGap: control.top - head.bottom, bottomGap: card.getBoundingClientRect().bottom - control.bottom};
+  });
+  expect(portGeometry.controlGap).toBeGreaterThanOrEqual(8);
+  expect(portGeometry.controlGap).toBeLessThanOrEqual(12);
+  expect(portGeometry.bottomGap).toBeLessThanOrEqual(14);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBeTruthy();
+  await page.locator(".settings-section").filter({has: portCard}).screenshot({path: testInfo.outputPath("dns-proxy-cards.png")});
+  await page.locator("#dns-proxy-status").scrollIntoViewIfNeeded();
+  await page.screenshot({path: testInfo.outputPath("dns-proxy-settings.png")});
+});
+
+test("one domain check shows matching rules and retains them when DNS lookup fails", async ({page}, testInfo) => {
+  const requests = [];
+  await page.route("**/api/tools/check-ip", route => {
+    const {target} = route.request().postDataJSON();
+    requests.push(target);
+    const excluded = target === "private.example.test";
+    return route.fulfill({json: {
+      target, addresses: excluded ? [] : ["192.0.2.10"],
+      domain_rule: {domain: target, scope: excluded ? "active" : "saved", action: excluded ? "exclude" : "include",
+        include_rule: excluded ? null : "*.example.test", exclude_rule: excluded ? "regex:^private\\.example\\.test$" : null},
+      lookup_error: excluded ? "DNS server did not respond" : null,
+      results: excluded ? [] : [{result: {ip: "192.0.2.10", matched: true, decision: "included", confirmed: true,
+        routes: ["192.0.2.0/24"], sources: [], snapshot_applied_at_unix: 1700000000}}],
+    }});
+  });
+  await navigate(page, "lists");
+  await page.locator('[data-list="include-domains"]').click();
+  await expect(page.locator("#list-hint")).toContainText("regex:");
+  await expect(page.locator("#domain-rule-test")).toHaveCount(0);
+  await navigate(page, "check");
+  await expect(page.getByRole("heading", {name: "Check IP / domain", exact: true})).toHaveCount(1);
+  await expect(page.locator("#check form")).toHaveCount(1);
+  await page.getByLabel("Check IP / domain", {exact: true}).fill("video.example.test");
+  await page.locator("#check-ip-submit").click();
+  const result = page.locator("#check-ip-result");
+  await expect(result.locator(".domain-rule-result")).toContainText("Saved manual rules: matched an include rule");
+  await expect(result.locator(".domain-rule-result")).toContainText("Include rule: *.example.test");
+  await expect(result.locator(".decision-banner")).toContainText("Included in active routes");
+  await expect(result.locator(".route-list")).toContainText("192.0.2.0/24");
+  await page.locator("#check-ip-input").fill("private.example.test");
+  await page.locator("#check-ip-submit").click();
+  await expect(result.locator(".domain-rule-result")).toContainText("Applied rules: matched an exclude rule");
+  await expect(result.locator(".domain-rule-result")).toContainText("Exclude rule: regex:^private\\.example\\.test$");
+  await expect(result.locator(".status-pill")).toHaveText("Could not resolve the domain");
+  await expect(result.locator(".error-inline")).toHaveText("DNS server did not respond");
+  await expect(result.locator(".decision-banner")).toHaveCount(0);
+  await expect(result).not.toContainText("0/0 matched");
+  await language(page, "ru");
+  await expect(page.getByRole("heading", {name: "Проверить IP / домен", exact: true})).toHaveCount(1);
+  await expect(result.locator(".domain-rule-result")).toContainText("Применённые правила: совпало исключающее правило");
+  await expect(result.locator(".status-pill")).toHaveText("Не удалось получить IP домена");
+  await expect(page.getByLabel("Проверить IP / домен", {exact: true})).toHaveValue("private.example.test");
+  expect(requests).toEqual(["video.example.test", "private.example.test"]);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBeTruthy();
+  await page.screenshot({path: testInfo.outputPath("domain-check.png"), fullPage: true});
 });
 
 test("copy works without Clipboard API and restores focus", async ({page}) => {
@@ -161,6 +331,32 @@ test("copy works without Clipboard API and restores focus", async ({page}) => {
   await page.locator("#list-search").focus();
   await page.keyboard.press("Control+V");
   await expect(page.locator("#list-search")).toHaveValue(value);
+});
+
+test("live IP checks show DNS origin and stay accurate in both languages", async ({page}) => {
+  await page.route("**/api/tools/check-ip", route => route.fulfill({json: {result: {
+    ip: "192.0.2.10", live: true, matched: true, decision: "included", confirmed: false,
+    routes: ["192.0.2.10/32"], sources: [],
+    dns_origin: {domain: "video.example.test", rule: "*.example.test", added_at: 1700000000},
+  }}}));
+  await navigate(page, "check");
+  await page.locator("#check-ip-input").fill("192.0.2.10");
+  await page.locator("#check-ip-submit").click();
+  const result = page.locator("#check-ip-result");
+  await expect(result.getByRole("heading", {name: "Routes in BIRD", exact: true})).toBeVisible();
+  await expect(result.locator(".decision-banner")).toContainText("Included in active routes");
+  await expect(result.locator(".kv-grid")).toContainText("Route from a DNS reply");
+  await expect(result.locator(".kv-grid")).toContainText("video.example.test");
+  await expect(result.locator(".kv-grid")).toContainText("Matching rule: *.example.test");
+  await expect(result.locator(".kv-grid")).toContainText("Added:");
+  await expect(result.locator("p.muted")).toHaveText("Result from the current BIRD routing table.");
+  await expect(result).not.toContainText("Source history is unavailable");
+  await expect(result).not.toContainText("Confirmed route snapshot");
+  await language(page, "ru");
+  await expect(result.getByRole("heading", {name: "Маршруты в BIRD", exact: true})).toBeVisible();
+  await expect(result.locator(".kv-grid")).toContainText("Сработавшее правило: *.example.test");
+  await expect(result.locator("p.muted")).toHaveText("Результат из текущей таблицы маршрутов BIRD.");
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBeTruthy();
 });
 
 test("failed IP checks stay failed when changing language", async ({page}) => {
@@ -243,6 +439,51 @@ test("all list tabs keep one panel and shorten display paths without losing coun
   await page.locator("#country-selected").check();
   await expect(page.locator(".country-card:visible")).toHaveCount(1);
   await expect(page.locator("#list-count")).toContainText("1 / 24");
+});
+
+test("URL source cards align within desktop rows and retain natural mobile heights", async ({page}, testInfo) => {
+  const mobile = testInfo.project.name === "mobile";
+  if (!mobile) await page.setViewportSize({width: 1800, height: 1100});
+  const entries = [
+    ["Long URL", `https://example.test/${"nested-segment/".repeat(10)}routes.txt`],
+    ["Short URL", "https://example.org/a.txt"],
+    ["Another long URL", `https://example.test/${"another-segment/".repeat(10)}domains.txt`],
+    ["Another short URL", "https://example.org/b.txt"],
+  ];
+  const content = entries.map(([name, url]) => `${name} | ${url}`).join("\n") + "\n";
+  for (const list of ["urls", "domain-list-urls"]) expect((await page.request.put(`/api/lists/${list}`, {data: {content}})).ok()).toBeTruthy();
+  const status = await (await page.request.get("/api/status")).json();
+  const sources = ["url", "domain-list-url"].flatMap(kind => entries.map(([name, url]) => ({kind, name, url, status: "fresh", routes: 123, bytes: 1024})));
+  await page.route("**/api/status", route => route.fulfill({json: {...status, status: {...status.status, sources}}}));
+  await page.locator("#refresh-btn").click();
+  await navigate(page, "lists");
+  await language(page, "ru");
+  for (const [tab, selector] of [["urls", "#list-tiles"], ["include-domains", ".domain-list-url-cards"]]) {
+    await page.locator(`[data-list="${tab}"]`).click();
+    const grid = page.locator(selector);
+    await expect(grid.locator(":scope > .list-card")).toHaveCount(4);
+    const cards = await grid.locator(":scope > .list-card").evaluateAll(items => items.map(card => {
+      const box = card.getBoundingClientRect();
+      const stats = card.querySelector(".list-card-stats").getBoundingClientRect();
+      const actions = card.querySelector(".list-card-actions").getBoundingClientRect();
+      return {x: box.x, top: box.top, bottom: box.bottom, height: box.height, statsTop: stats.top, statsBottom: stats.bottom, actionsTop: actions.top,
+        previewHeight: card.querySelector(".url-preview").getBoundingClientRect().height};
+    }));
+    if (mobile) {
+      expect(cards[1].x).toBeCloseTo(cards[0].x, 0);
+      expect(cards[1].top).toBeGreaterThan(cards[0].bottom);
+      expect(cards[1].previewHeight).toBeLessThan(cards[0].previewHeight);
+    } else {
+      for (const index of [0, 2]) {
+        expect(cards[index + 1].x).toBeGreaterThan(cards[index].x);
+        for (const key of ["top", "bottom", "height", "statsTop", "statsBottom", "actionsTop", "previewHeight"]) {
+          expect(cards[index + 1][key], `${tab}: ${key}`).toBeCloseTo(cards[index][key], 0);
+        }
+      }
+    }
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBeTruthy();
+    await grid.screenshot({path: testInfo.outputPath(`${tab}-aligned-cards.png`)});
+  }
 });
 
 test("preview applies the reviewed snapshot even when the source later changes", async ({page, request}) => {

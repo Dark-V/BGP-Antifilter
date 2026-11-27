@@ -6,6 +6,8 @@ import uuid
 import difflib
 import hashlib
 
+from ..domain_rules import validate_rule_list
+
 from ..export_address_list import export_rsc, read_snapshot, validate_list_name
 from ..state_store import state_lock
 from .storage import text_load, write_text_atomic
@@ -63,6 +65,8 @@ class ListService:
             raise ValueError("content must be a string")
         if "\x00" in content:
             raise ValueError("content contains NUL byte")
+        if name in {"include-domains", "exclude-domains"}:
+            validate_rule_list(content)
         backup = self.backup_file(path)
         if content and not content.endswith("\n"):
             content += "\n"
