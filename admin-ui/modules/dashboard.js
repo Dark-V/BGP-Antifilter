@@ -78,7 +78,7 @@ function buildStages(payload) {
       sources.filter(source => source.cache_file)
     ),
     generator: stageState(
-      runtimeState ? "warn" : status.degraded ? "warn" : status.success === false ? "fail" : routes.invalid ? "warn" : "ok",
+      runtimeState ? "warn" : status.degraded ? "warn" : status.success === false ? "fail" : (routes.invalid || routes.broad_skipped) ? "warn" : "ok",
       t("generator"),
       runtimeState ? t("generatorBusy") : status.degraded ? (status.degraded_reason || t("degradedState")) : `${t("finalRouteCount")}: ${routes.final ?? 0}`,
       runtimeState ? [

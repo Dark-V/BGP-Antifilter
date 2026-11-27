@@ -43,7 +43,7 @@ def digest(text):
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-def freeze_sources(sources):
+def freeze_sources(sources, *, min_prefix_length=0):
     records = []
     for source in sources:
         if source.get("status") not in {"fresh", "cache"}:
@@ -55,7 +55,10 @@ def freeze_sources(sources):
             except (ValueError, TypeError):
                 prefixes = []
         else:
-            prefixes = [str(net) for net in collapse_routes(parse_networks_from_text(text, extract=True))]
+            networks = parse_networks_from_text(text, extract=True)
+            if source["kind"] != "exclude-domain":
+                networks = [network for network in networks if network.prefixlen >= min_prefix_length]
+            prefixes = [str(net) for net in collapse_routes(networks)]
         records.append({
             "kind": source["kind"], "name": source.get("name", ""),
             "url": source.get("url"), "status": source["status"],
@@ -65,10 +68,10 @@ def freeze_sources(sources):
     return records
 
 
-def make_snapshot(networks, status, sources):
+def make_snapshot(networks, status, sources, *, min_prefix_length=0):
     prefixes = [str(network) for network in networks]
     return {"schema": 1, "prefixes": prefixes, "routes_sha256": digest(route_text(prefixes)),
-            "status": status, "provenance": freeze_sources(sources)}
+            "status": status, "provenance": freeze_sources(sources, min_prefix_length=min_prefix_length)}
 
 
 def read_confirmed(routes):

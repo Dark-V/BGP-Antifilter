@@ -1,7 +1,7 @@
 """Parse, validate and combine collected route fragments."""
 
 from . import generate_routes
-from .logging import progress
+from .logging import log, progress
 from .route_output import write_text
 
 
@@ -63,12 +63,14 @@ def parse_and_build_routes(output, base_text, include_text, exclude_text, min_pr
         exclude, exclude_invalid = generate_routes.read_networks(tmp_exclude)
         extra, extra_invalid = generate_routes.read_networks(tmp_include)
 
-        broad = unsafe_broad_routes(base + extra, min_prefix_length)
-        if broad and not allow_broad_routes:
-            examples = ", ".join(str(network) for network in broad[:5])
-            raise RuntimeError(
-                f"refusing broad IPv4 routes shorter than /{min_prefix_length}: {examples}"
-            )
+        broad = [] if allow_broad_routes else unsafe_broad_routes(base + extra, min_prefix_length)
+        broad_examples = list(dict.fromkeys(map(str, broad)))[:8]
+        if broad:
+            rejected = set(broad)
+            base = [network for network in base if network not in rejected]
+            extra = [network for network in extra if network not in rejected]
+            log("warning", f"Skipping IPv4 prefixes shorter than /{min_prefix_length}",
+                stage="progress", count=len(broad), prefixes=broad_examples)
 
         progress("building final route set", base=len(base), include=len(extra), exclude=len(exclude))
         networks, applied, route_stats = generate_routes.build_routes_with_stats(base, exclude, extra)
@@ -82,6 +84,8 @@ def parse_and_build_routes(output, base_text, include_text, exclude_text, min_pr
             "collapsed_removed": route_stats["collapsed_removed"],
             "exclude_rules_applied": applied,
             "invalid": base_invalid + exclude_invalid + extra_invalid,
+            "broad_skipped": len(broad),
+            "broad_examples": broad_examples,
         }
         return networks, routes
     finally:

@@ -61,13 +61,17 @@ class IPv4SourceParsingTests(unittest.TestCase):
         self.assertTrue(any(ipaddress.IPv4Address("192.0.2.42") in network for network in networks))
         self.assertIn(ipaddress.IPv4Network("198.51.100.0/24"), networks)
 
-    def test_escaped_mask_cannot_bypass_broad_route_guard(self):
+    def test_broad_route_guard_skips_escaped_and_plain_prefixes(self):
         with tempfile.TemporaryDirectory() as tmp, contextlib.redirect_stdout(io.StringIO()):
-            with self.assertRaisesRegex(RuntimeError, "refusing broad IPv4 routes"):
-                route_builder.parse_and_build_routes(
-                    Path(tmp) / "routes.conf", ['{"service.test":["192.0.2.0\\/7"]}'],
-                    [], [], 8, False,
-                )
+            networks, stats = route_builder.parse_and_build_routes(
+                Path(tmp) / "routes.conf",
+                [r'{"service.test":["38.0.0.0\/7","203.0.113.0\/24"]}', "38.0.0.0/7\n210.0.0.0/7"],
+                ["218.0.0.0/7\n198.51.100.0/24"], [], 8, False,
+            )
+        self.assertEqual(list(map(str, networks)), ["198.51.100.0/24", "203.0.113.0/24"])
+        self.assertEqual(stats["candidate"], 2)
+        self.assertEqual(stats["broad_skipped"], 4)
+        self.assertEqual(stats["broad_examples"], ["38.0.0.0/7", "210.0.0.0/7", "218.0.0.0/7"])
 
 
 if __name__ == "__main__":

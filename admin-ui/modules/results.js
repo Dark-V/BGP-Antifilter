@@ -326,6 +326,10 @@ function renderRouteMath(routes = {}) {
         <div class="kv"><span>${t("excludeRules")}</span><strong>${routeValue(routes.exclude_rules_applied)}</strong></div>
         <div class="kv"><span>${t("collapsedRemoved")}</span><strong>${routeValue(collapsedRemoved)}</strong></div>
         <div class="kv ${routes.invalid ? "warn" : "ok"}"><span>${t("invalid")}</span><strong>${routeValue(routes.invalid ?? 0)}</strong></div>
+        ${routes.broad_skipped > 0 ? `<div class="kv warn">
+          <span>${t("skippedBroadPrefixes")}</span><strong>${routeValue(routes.broad_skipped)}</strong>
+          <span>${escapeHtml((routes.broad_examples || []).join(", "))}</span>
+        </div>` : ""}
       </div>
     </div>`;
 }

@@ -66,6 +66,7 @@ def main(argv=None):
         "collapsed_removed": 0,
         "exclude_rules_applied": 0,
         "invalid": 0,
+        "broad_skipped": 0,
     }
     networks = []
 
@@ -105,8 +106,10 @@ def main(argv=None):
                 args.allow_broad_routes,
             )
 
-            if not networks and dns_policy is None:
-                record = {"kind": "routes", "name": "generated", "status": "failed", "error": "generated route list is empty"}
+            if not networks and (dns_policy is None or routes["broad_skipped"]):
+                error = ("no routes remain after skipping broad IPv4 prefixes"
+                         if routes["broad_skipped"] else "generated route list is empty")
+                record = {"kind": "routes", "name": "generated", "status": "failed", "error": error}
                 errors.append(record)
                 source_failed = True
             elif not args.dry_run:
@@ -136,7 +139,8 @@ def main(argv=None):
         if not args.dry_run:
             write_json(Path(str(output) + ".dns.json"), dns_policy)
     if args.snapshot and success:
-        snapshot = make_snapshot(networks, status, sources)
+        snapshot = make_snapshot(networks, status, sources,
+                                 min_prefix_length=0 if args.allow_broad_routes else args.min_prefix_length)
         if dns_policy is not None:
             snapshot["dns_policy"] = dns_policy
         write_json(Path(args.snapshot), snapshot)
