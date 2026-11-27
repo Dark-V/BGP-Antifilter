@@ -69,6 +69,23 @@ class AdminHttpTests(unittest.TestCase):
         self.assertIn("HttpOnly; SameSite=Strict", headers["Set-Cookie"])
         return headers["Set-Cookie"].split(";", 1)[0]
 
+    def test_passwordless_panel_starts_a_session_without_exposing_actions_to_cookieless_requests(self):
+        with mock.patch.dict(os.environ, {"ADMIN_PASSWORD": "", "NO_ADMIN_PASSWORD": "true"}):
+            self.app.auth = auth.AuthService()
+            code, headers, session = self.request("GET", "/api/session")
+            self.assertEqual(code, 200)
+            self.assertFalse(session["password_required"])
+            self.assertFalse(session["authenticated"])
+            self.assertNotIn("Set-Cookie", headers)
+            self.assertEqual(self.request("PUT", "/api/settings", {"values": {}})[0], 401)
+
+            code, headers, body = self.request("POST", "/api/login", {})
+            self.assertEqual((code, body), (200, {"ok": True}))
+            self.assertIn("HttpOnly; SameSite=Strict", headers["Set-Cookie"])
+            cookie = headers["Set-Cookie"].split(";", 1)[0]
+            self.assertTrue(self.request("GET", "/api/session", cookie=cookie)[2]["authenticated"])
+            self.assertEqual(self.request("GET", "/api/settings", cookie=cookie)[0], 200)
+
     def test_dns_proxy_endpoints_require_auth_and_preview_does_not_save(self):
         self.assertEqual(self.request("GET", "/api/dns-proxy/status")[0], 401)
         self.assertEqual(self.request("POST", "/api/dns-proxy/test-rule", {})[0], 401)
@@ -323,7 +340,7 @@ class AdminHttpTests(unittest.TestCase):
         with mock.patch.object(admin_http, "AdminHTTPServer") as server:
             with mock.patch.dict(os.environ, {"ADMIN_ENABLED": "0"}):
                 self.assertEqual(admin_http.main(), 0)
-            with mock.patch.dict(os.environ, {"ADMIN_ENABLED": "1", "ADMIN_PASSWORD": ""}):
+            with mock.patch.dict(os.environ, {"ADMIN_ENABLED": "1", "ADMIN_PASSWORD": "", "NO_ADMIN_PASSWORD": "false"}):
                 self.assertEqual(admin_http.main(), 1)
             server.assert_not_called()
 
@@ -348,7 +365,8 @@ class AdminHttpTests(unittest.TestCase):
             status.assert_called_once_with(force=True)
 
     def test_main_keeps_port_binding_and_update_reconciliation(self):
-        with mock.patch.dict(os.environ, {"ADMIN_ENABLED": "1", "ADMIN_PORT": "18080"}):
+        with mock.patch.dict(os.environ, {"ADMIN_ENABLED": "1", "ADMIN_PORT": "18080",
+                                          "ADMIN_PASSWORD": "", "NO_ADMIN_PASSWORD": "true"}):
             with mock.patch.object(admin_http, "AdminApplication", return_value=self.app):
                 with mock.patch.object(admin_http.updater_server, "reconcile_runtime") as reconcile:
                     with mock.patch.object(admin_http, "AdminHTTPServer") as server:

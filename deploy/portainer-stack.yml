@@ -79,7 +79,8 @@ services:
     environment:
       <<: *environment
       ADMIN_ENABLED: "1"
-      ADMIN_PASSWORD: "${ADMIN_PASSWORD:?Set ADMIN_PASSWORD in the stack environment}"
+      ADMIN_PASSWORD: "${ADMIN_PASSWORD:-}"
+      NO_ADMIN_PASSWORD: "${NO_ADMIN_PASSWORD:-false}"
     volumes:
       - generated:/etc/bird/generated
       - config:/etc/bird/config

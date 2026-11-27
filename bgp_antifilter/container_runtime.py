@@ -12,6 +12,7 @@ from .runtime_state import state_path
 from .state_store import read_state, write_state
 from .network_diagnostics import bird_ip_diagnostic
 from .bgp_config import peer_environment, peer_source_key
+from .update_config import env_bool
 
 
 def fail(message):
@@ -65,7 +66,7 @@ def validate_env():
         fail("ADMIN_PORT must be an integer")
     if not 1 <= port <= 65535:
         fail("ADMIN_PORT must be between 1 and 65535")
-    if enabled == "1" and not os.environ["ADMIN_PASSWORD"]:
+    if enabled == "1" and not env_bool("NO_ADMIN_PASSWORD") and not os.environ.get("ADMIN_PASSWORD"):
         fail("ADMIN_PASSWORD must be set when ADMIN_ENABLED=1")
     from .admin.settings import validate_setting
     try:

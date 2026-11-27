@@ -11,6 +11,7 @@ from urllib.parse import parse_qs, urlparse
 from .. import __version__, updater_server
 from ..export_address_list import DEFAULT_LIST_NAME
 from ..route_transaction import RouteManager
+from ..update_config import env_bool
 from .application import AdminApplication
 from .auth import cookie_header, get_cookie
 from .lists import ListWriteError, SnapshotUnavailable, UnknownListError
@@ -160,6 +161,7 @@ class AdminHandler(BaseHTTPRequestHandler):
         if path == "/api/session":
             self.send_json({
                 "authenticated": self.authenticated(), "version": __version__,
+                "password_required": self.app.auth.password_required,
                 "login_network": self.app.diagnostics.login_network_payload(),
             })
             return
@@ -381,7 +383,7 @@ def main():
         print("admin server is disabled (ADMIN_ENABLED != 1)", flush=True)
         return 0
     port = int(os.environ.get("ADMIN_PORT", "8080"))
-    if not os.environ.get("ADMIN_PASSWORD", ""):
+    if not env_bool("NO_ADMIN_PASSWORD") and not os.environ.get("ADMIN_PASSWORD", ""):
         print("ADMIN_PASSWORD must be set when admin server is enabled", flush=True)
         return 1
     app = AdminApplication()

@@ -5,6 +5,7 @@ import { test } from "node:test";
 globalThis.localStorage = {getItem: () => "en"};
 const modulesUrl = new URL("../../admin-ui/modules/", import.meta.url);
 const { api } = await import(new URL("api.js", modulesUrl));
+const { openSession } = await import(new URL("session.js", modulesUrl));
 const { locale, t } = await import(new URL("i18n.js", modulesUrl));
 const { escapeHtml } = await import(new URL("dom.js", modulesUrl));
 const { formatCountdown, formatDurationSeconds } = await import(new URL("format.js", modulesUrl));
@@ -17,6 +18,23 @@ const { settingsFormValues, applySettingsFormValues } = await import(new URL("se
 const { parseListLines, parseNamedUrlSourceLine, serializeNamedUrlSource } = await import(new URL("lists.js", modulesUrl));
 const { operationState, renderStoredReloadResult } = await import(new URL("operations.js", modulesUrl));
 const { applyUpdate, loadUpdateStatus, renderUpdateStatus, updateState, releaseExcerpt } = await import(new URL("updates.js", modulesUrl));
+
+test("passwordless panel logs in automatically while the default requires the form", async context => {
+  let passwordRequired = false;
+  const calls = [];
+  context.mock.method(globalThis, "fetch", async (path, options) => {
+    calls.push([path, options.method, options.body]);
+    const payload = path === "/api/session" ? {authenticated: false, password_required: passwordRequired} : {ok: true};
+    return new Response(JSON.stringify(payload), {headers: {"Content-Type": "application/json"}});
+  });
+  assert.equal((await openSession()).authenticated, true);
+  assert.deepEqual(calls, [["/api/session", undefined, undefined], ["/api/login", "POST", "{}"]]);
+
+  calls.length = 0;
+  passwordRequired = true;
+  assert.equal((await openSession()).authenticated, false);
+  assert.deepEqual(calls, [["/api/session", undefined, undefined]]);
+});
 
 test("all feature modules resolve and their import graph has no cycles", async () => {
   const graph = new Map();

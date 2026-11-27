@@ -26,10 +26,12 @@ VALID_ENV = {
 
 
 class ContainerRuntimeTests(unittest.TestCase):
-    def test_env_validation_accepts_disabled_admin_and_enabled_admin_with_password(self):
+    def test_env_validation_accepts_disabled_admin_and_configured_login_modes(self):
         with mock.patch.dict(os.environ, VALID_ENV, clear=True):
             self.assertEqual(container_runtime.main(["validate-env"]), 0)
             with mock.patch.dict(os.environ, {"ADMIN_ENABLED": "1", "ADMIN_PASSWORD": "test"}):
+                self.assertEqual(container_runtime.main(["validate-env"]), 0)
+            with mock.patch.dict(os.environ, {"ADMIN_ENABLED": "1", "NO_ADMIN_PASSWORD": "true"}):
                 self.assertEqual(container_runtime.main(["validate-env"]), 0)
 
     def test_env_validation_retains_error_messages_and_exit_code(self):
